@@ -1,0 +1,4 @@
+{
+    "python.REPL.enableREPLSmartSend": false,
+    "python.defaultInterpreterPath": "/home/smcc/anaconda3/envs/calcofi/bin/python"
+}
