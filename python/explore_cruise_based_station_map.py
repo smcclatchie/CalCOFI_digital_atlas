@@ -120,7 +120,7 @@ dropped_extent = [max(-180, 5 * np.floor(drop.lon.min() / 5)), 5 * np.ceil(drop.
 
 panels = [
     (sel, selected_extent, 4,
-     f"Selected: {n_hydro} hydrographic CalCOFI cruises + {n_rest} restored CalCOFI-ship cruises\n"
+     f"Selected: {n_hydro + n_rest} CalCOFI cruises ({n_hydro} with hydrographic data + {n_rest} filtered by CalCOFI ship and station pattern)\n"
      f"{len(sel):,} tows on grid stations; south of 42°N, outside the Gulf of California"),
     (drop, dropped_extent, 6,
      f"Dropped: {drop.cruise_key.nunique()} cruises with tows outside the selection "
