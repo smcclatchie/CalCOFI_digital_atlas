@@ -1,0 +1,373 @@
+---
+title: "From `swfsc_ichthyo.nc` to a filtered, gridded CalCOFI ichthyoplankton NetCDF"
+subtitle: "Conversion, filtering and standardisation of the CalCOFI.io ichthyoplankton download"
+author: "Sam McClatchie"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    embed-resources: true
+    code-tools: true
+    fig-align: center
+jupyter: python3
+execute:
+  warning: false
+---
+
+```{python}
+#| label: setup
+#| code-fold: true
+#| code-summary: "Setup: paths and imports"
+import os
+import subprocess
+import sys
+
+import netCDF4
+import numpy as np
+import pandas as pd
+from IPython.display import Markdown
+
+REPO = os.path.abspath("..")
+sys.path.insert(0, os.path.join(REPO, "python"))
+import build_gridded_abundance_by_cruise_and_taxon as build  # noqa: E402
+
+RELEASE = build.DEFAULT_RELEASE
+SRC = build.DEFAULT_SRC          # CalCOFI.io swfsc_ichthyo.nc download
+OUT = build.DEFAULT_OUT          # gridded NetCDF written by this document
+BUILD_SCRIPT = os.path.join(REPO, "python", "build_gridded_abundance_by_cruise_and_taxon.py")
+MAP_SCRIPT = os.path.join(REPO, "python", "explore_cruise_based_station_map.py")
+FIG_DIR = os.path.join(REPO, "figures", "exploration")
+pd.set_option("display.width", 160)
+```
+
+# Summary
+
+The CalCOFI.io download `swfsc_ichthyo.nc` is a careful, CF-annotated
+export of the SWFSC ichthyoplankton tables, but in its current form it
+cannot be rendered by generic NetCDF tools (GeoLibre, ncview, Panoply),
+and it mixes CalCOFI sampling with other surveys. This document describes
+a standalone Python script that converts it into a filtered, standardised,
+gridded NetCDF:
+
+- **Filtered** to CalCOFI cruises and CalCOFI grid stations, south of
+  42°N and outside the Gulf of California.
+- **Standardised** to eggs or larvae per 10 m² (oblique and vertical
+  nets) or per 100 m³ (Manta surface net), with formulas verified
+  against NOAA ERDDAP.
+- **Kept separate** by life stage, net type, and standard CalCOFI
+  sampling versus high-resolution / special surveys.
+- **Gridded** at the occupied CalCOFI line/station on a regular 0.02°
+  lat/lon grid, so each cruise × taxon (× net type × stage × sampling
+  type) is one map slice.
+
+@sec-recommendations lists suggestions for the CalCOFI.io
+database that would make most of this processing unnecessary.
+
+# The source file {#sec-source}
+
+`swfsc_ichthyo.nc` stores a four-level hierarchy (site → tow → net →
+occurrence) in NetCDF-4 groups linked by `parent_index`. Abundance lives
+in the `occurrence` group with no coordinates of its own; latitude,
+longitude and time are three levels up. The file's own `cf_scope`
+attribute notes that "CF defines no feature type for this nesting". The
+consequence is that generic viewers find no renderable (2-D or higher)
+variable.
+
+```{python}
+#| label: source-structure
+src = netCDF4.Dataset(SRC)
+print(f"release: {src.db_release}    time coverage: {src.time_coverage}    "
+      f"stated coverage: {src.geospatial_coverage}")
+for name, grp in src.groups.items():
+    dims = ", ".join(f"{d}={len(v)}" for d, v in grp.dimensions.items())
+    print(f"  group {name:12s} {dims:28s} variables: {', '.join(grp.variables)}")
+src.close()
+```
+
+# Which tows are CalCOFI? {#sec-selection}
+
+The download holds every SWFSC ichthyoplankton tow, from the Central
+Pacific to Central America and British Columbia. The CalCOFI.io `cruise`
+table has no "is CalCOFI" flag, so the selection is built from what the
+database does record.
+
+**Cruise rule.**
+
+1. A cruise is a *hydrographic CalCOFI cruise* if it also contributed
+   CalCOFI bottle or CTD data (`cruise.cruise_key_datasets` contains
+   `calcofi_bottle` or `calcofi_ctd-cast`). This includes the modern
+   CTD-only cruises.
+2. Early cruises whose hydrography is not in the database (mostly the
+   1950s ships *Black Douglas*, *Crest*, *Horizon* and *Stranger*) are
+   *restored* when the ship ran at least one cruise of type 1 and ≥ 90% of
+   the cruise's tows are on grid stations inside the domain. The result is
+   insensitive to that threshold (91 / 90 / 89 cruises restored at 80 / 90 /
+   100%).
+
+**Tow rule.** A tow from a selected cruise is kept if it is on a grid
+station (has a `grid_key`), south of 42°N (the California–Oregon border),
+within 140–105°W, and outside the Gulf of California.
+
+The maps below are produced by `explore_cruise_based_station_map.py`,
+which imports the same selection functions as the conversion script, so
+the figures and the file cannot disagree.
+
+```{python}
+#| label: run-maps
+#| code-fold: true
+#| code-summary: "Regenerate the three maps"
+r = subprocess.run([sys.executable, MAP_SCRIPT], cwd=os.path.dirname(MAP_SCRIPT),
+                   capture_output=True, text=True, env={**os.environ, "MPLBACKEND": "Agg"})
+if r.returncode != 0:
+    raise RuntimeError(r.stderr[-3000:])
+selection = pd.read_csv(os.path.join(os.path.dirname(OUT), "calcofi_cruise_selection.csv"))
+selection.reason.value_counts().rename("cruises").to_frame()
+```
+
+![All 76,512 SWFSC ichthyoplankton net tows: kept (navy dots) and dropped (amber crosses).](../figures/exploration/station_map_1_kept_and_dropped.png){#fig-kept-dropped}
+
+![The selected tows, coloured by the CalCOFI.io `grid` table's station pattern.](../figures/exploration/station_map_2_selected_by_station_pattern.png){#fig-pattern}
+
+Note that the `grid` table's *historical* pattern is not the same as
+"non-CalCOFI": it covers the Baja California lines and the wider 1950s–60s
+layout, which are genuine CalCOFI sampling.
+
+# Stations and special surveys {#sec-stations}
+
+## `grid_key` is an area, not a station
+
+Each net carries a `grid_key` (e.g. `st30-ln90`), but a `grid_key` is a
+cell of the CalCOFI.io grid. In the historical layout one cell can cover
+thousands of km² and contain many distinct occupied stations, up to
+260 km apart. Gridding by `grid_key` therefore merges and averages
+different stations: for example, a 1985 fine-scale survey with dozens of
+positions a tenth of a station apart collapses onto one point.
+
+The occupied station is recorded in `site_key` as CalCOFI line and
+station (e.g. `091.2 032.4`). The conversion uses `site_key` as station
+identity, places each station at the median recorded position of its
+tows, and grids at 0.02° (~2 km). A few distinct line/stations have
+identical recorded positions and therefore share a cell.
+
+## Standard CalCOFI sampling versus special surveys
+
+Several programmes sampled at high spatial resolution from CalCOFI-class
+ships: the 1980–86 anchovy egg surveys, the 1987–91 *Yellowfin* and 1994
+*McArthur* Pairovet surveys, the 2002–04 cowcod conservation area
+sampling, and spring sardine surveys. These must not be averaged with the
+standard CalCOFI series, so every tow is labelled:
+
+- **standard**: the tow's line/station has CalCOFI bottle or CTD casts
+  (CalCOFI.io `sample` table), *and* either the cruise contributed
+  CalCOFI bottle/CTD data, or, for restored cruises with no hydrographic
+  data, ≥ 80% of the cruise's tows are at such stations;
+- **special survey**: every other tow.
+
+Hydrographic cruises are judged tow by tow because several CalCOFI cruises
+(e.g. the April 2003–2010 spring cruises) added survey stations to the
+standard pattern: their standard stations stay standard and only the added
+stations become special survey. For restored cruises the per-cruise share
+is clearly bimodal. The cruises that are entirely special survey are
+listed below.
+
+```{python}
+#| label: special-surveys
+#| code-fold: true
+#| code-summary: "Classify tows and list special-survey cruises"
+net = netCDF4.Dataset(SRC)["net"]
+tows = pd.DataFrame({k: netCDF4.chartostring(net[k][:]) for k in ["cruise_key", "grid_key", "site_key"]})
+tows["lat"] = np.ma.filled(net["latitude"][:].astype("f8"), np.nan)
+tows["lon"] = np.ma.filled(net["longitude"][:].astype("f8"), np.nan)
+selected, per_cruise = build.select_calcofi_nets(tows, build.read_cruise_table(RELEASE))
+kept = tows[selected].copy()
+kept["sampling"] = build.classify_sampling(kept, build.read_hydro_sites(RELEASE), per_cruise)
+by_cruise = (kept.groupby("cruise_key")
+                 .agg(tows=("sampling", "size"),
+                      standard_share=("sampling", lambda s: (s == "standard").mean()))
+                 .join(per_cruise.ship_name))
+survey = by_cruise[by_cruise.standard_share == 0].copy()
+survey["year"] = survey.index.str[:4]
+(survey.groupby("ship_name")
+       .agg(cruises=("tows", "size"), tows=("tows", "sum"),
+            years=("year", lambda y: f"{y.min()}–{y.max()}" if y.min() != y.max() else y.min()))
+       .sort_values("years"))
+```
+
+![The selected tows, split into standard CalCOFI sampling and high-resolution / special surveys.](../figures/exploration/station_map_3_selected_by_sampling_type.png){#fig-sampling}
+
+# Standardisation and paired nets {#sec-standardisation}
+
+`occurrence.abundance` is a raw specimen count. The conversion
+standardises it per net:
+
+| Net type | Code | Units | Formula |
+|---|---|---|---|
+| CalCOFI 1 m ring net (oblique) | C1 | per 10 m² | count × `std_haul_factor` / `prop_sorted` |
+| CalCOFI bongo (oblique) | CB | per 10 m² | count × `std_haul_factor` / `prop_sorted` |
+| CalVET (vertical) | CV | per 10 m² | count × `std_haul_factor` / `prop_sorted` |
+| Pairovet (vertical) | PV | per 10 m² | count × `std_haul_factor` / `prop_sorted` |
+| Manta (surface) | MT | per 100 m³ | 100 × count / `volume_sampled` / `prop_sorted` |
+
+NOAA publishes no per-10 m² value for Manta tows, so they are kept in their
+own variable. The formulas are checked here against NOAA ERDDAP's
+published `larvae_10m2` and `larvae_100m3`:
+
+```{python}
+#| label: erddap-check
+erddap = pd.read_csv(
+    "https://coastwatch.pfeg.noaa.gov/erddap/tabledap/erdCalCOFIlrvcnt.csv?"
+    "tow_type,standard_haul_factor,volume_sampled,proportion_sorted,larvae_count,"
+    "larvae_10m2,larvae_100m3&time%3E=2005-01-01&time%3C=2009-12-31&larvae_count%3E=5",
+    skiprows=[1])
+areal = erddap[erddap.larvae_10m2.notna()]
+manta = erddap[erddap.larvae_100m3.notna()]
+pred_areal = areal.larvae_count * areal.standard_haul_factor / areal.proportion_sorted
+pred_manta = 100 * manta.larvae_count / manta.volume_sampled / manta.proportion_sorted
+pd.DataFrame({
+    "rows": [len(areal), len(manta)],
+    "partly sorted rows": [(areal.proportion_sorted < 1).sum(), (manta.proportion_sorted < 1).sum()],
+    "max relative error": [(abs(pred_areal - areal.larvae_10m2) / areal.larvae_10m2).max(),
+                           (abs(pred_manta - manta.larvae_100m3) / manta.larvae_100m3).max()],
+}, index=["per 10 m² (oblique, vertical)", "per 100 m³ (Manta)"])
+```
+
+**Paired nets.** Protocol uses the right-hand (starboard) net of paired
+samplers. The CalCOFI.io net table has no side field.
+
+- Bongo (CB) tows carry one net each in the download. Matching against
+  ERDDAP's `net_location` shows it is the starboard net.
+- 1,044 Pairovet (PV) tows carry both nets. Each net is matched to
+  ERDDAP's larval and egg records by cruise, line, station and standard
+  haul factor, and the port net is dropped. Pairs with no ERDDAP record
+  for either net keep both nets, which are averaged.
+
+**Repeat tows.** Where one cell was towed more than once with the same net
+type on one cruise (and the same sampling type), the cell holds the mean
+standardised abundance over those tows, with tows that did not catch the
+taxon counting as zero.
+
+# The conversion script {#sec-script}
+
+The complete, standalone script
+(`python/build_gridded_abundance_by_cruise_and_taxon.py`). It needs
+`numpy`, `pandas`, `netCDF4` and `duckdb`, plus internet access to the
+public CalCOFI.io Parquet tables and NOAA ERDDAP.
+
+```{python}
+#| label: script-listing
+#| echo: false
+#| class-output: python
+print(open(BUILD_SCRIPT).read())
+```
+
+Run it, here with the defaults written out:
+
+```{python}
+#| label: run-build
+r = subprocess.run([sys.executable, BUILD_SCRIPT, "--src", SRC, "--out", OUT, "--release", RELEASE],
+                   capture_output=True, text=True)
+if r.returncode != 0:
+    raise RuntimeError(r.stderr[-3000:])
+print(r.stdout)
+```
+
+# The resulting file {#sec-result}
+
+```{python}
+#| label: result-structure
+g = netCDF4.Dataset(OUT)
+print(f"{os.path.getsize(OUT) / 1e6:.1f} MB    {g.title}")
+for name, v in g.variables.items():
+    if v.ndim >= 4:
+        print(f"  {name:20s} ({', '.join(v.dimensions)})  [{v.units}]")
+for dim in ["sampling", "net_type", "life_stage"]:
+    print(f"  {dim:12s}", [str(x) for x in netCDF4.chartostring(g[f'{dim}_label'][:])])
+print(f"  {len(g.dimensions['cruise'])} cruises, {len(g.dimensions['taxon'])} taxa, "
+      f"{len(g.dimensions['lat'])} x {len(g.dimensions['lon'])} grid")
+```
+
+A blank (fill) abundance cell means the taxon was not caught there. The
+`tows` and `manta_tows` variables distinguish a sampled zero (tow count >
+0) from a cell that was not sampled by that net type (fill).
+
+**Verification.** 80 randomly chosen occurrences are recomputed directly
+from the source file and compared with the gridded value; the tow counts
+are also summed per sampling type.
+
+```{python}
+#| label: verify
+#| code-fold: true
+#| code-summary: "Independent spot check"
+s = netCDF4.Dataset(SRC)
+n, o = s["net"], s["occurrence"]
+N = pd.DataFrame({k: netCDF4.chartostring(n[k][:]) for k in ["cruise_key", "grid_key", "site_key", "tow_type"]})
+N["tow"] = n["parent_index"][:] - 1
+for k, v in [("lat", "latitude"), ("lon", "longitude"), ("std_haul_factor", "std_haul_factor"),
+             ("prop_sorted", "prop_sorted"), ("volume_sampled", "volume_sampled")]:
+    N[k] = np.ma.filled(n[v][:].astype("f8"), np.nan)
+port, _ = build.pairovet_port_nets(N)
+K = N[selected & ~N.index.isin(port)].copy()
+K["sampling"] = build.classify_sampling(K, build.read_hydro_sites(RELEASE), per_cruise)
+O = pd.DataFrame({"net": o["parent_index"][:] - 1, "c": o["abundance"][:],
+                  "tk": netCDF4.chartostring(o["taxon_key"][:]),
+                  "ls": netCDF4.chartostring(o["life_stage"][:])})
+O = O[O.net.isin(K.index) & O.ls.isin(build.LIFE_STAGES)]
+label = lambda v: list(netCDF4.chartostring(g[v][:]))
+cr, sm, st, tx = label("cruise_label"), label("sampling_label"), label("life_stage_label"), label("taxon_label")
+nt = [x.split(":")[0] for x in label("net_type_label")]
+lat, lon = g["lat"][:], g["lon"][:]
+pos = K.groupby("site_key")[["lat", "lon"]].median()
+pos["ci"] = [int(np.argmin(np.abs(lat - v))) for v in pos.lat]
+pos["cj"] = [int(np.argmin(np.abs(lon - v))) for v in pos.lon]
+K = K.join(pos[["ci", "cj"]], on="site_key")
+
+rng = np.random.default_rng(7)
+matched = 0
+for i in rng.choice(len(O), 80, replace=False):
+    r_ = O.iloc[i]
+    nn = K.loc[r_.net]
+    grp = K[(K.cruise_key == nn.cruise_key) & (K.sampling == nn.sampling) & (K.tow_type == nn.tow_type)
+            & (K.ci == nn.ci) & (K.cj == nn.cj)]
+    oc = O[O.net.isin(grp.index) & (O.tk == r_.tk) & (O.ls == r_.ls)].join(grp, on="net")
+    if nn.tow_type == build.MANTA:
+        expected = (100 * oc.c / oc.volume_sampled / oc.prop_sorted).sum() / len(grp)
+        got = g["abundance_per_100m3"][cr.index(nn.cruise_key), sm.index(nn.sampling),
+                                      st.index(r_.ls), tx.index(r_.tk), nn.ci, nn.cj]
+    else:
+        expected = (oc.c * oc.std_haul_factor / oc.prop_sorted).sum() / len(grp)
+        got = g["abundance_per_10m2"][cr.index(nn.cruise_key), sm.index(nn.sampling), nt.index(nn.tow_type),
+                                     st.index(r_.ls), tx.index(r_.tk), nn.ci, nn.cj]
+    matched += np.isclose(float(got), expected, rtol=1e-9)
+
+tow_totals = np.zeros(2, int)
+for c in range(len(cr)):       # one cruise at a time: a whole variable is too large for memory
+    for k in range(2):
+        tow_totals[k] += int(np.ma.filled(g["tows"][c, k], 0).sum() + np.ma.filled(g["manta_tows"][c, k], 0).sum())
+Markdown(f"**{matched} of 80** spot-checked cells match the source. Tows in the file: "
+         f"**{tow_totals[0]:,}** standard and **{tow_totals[1]:,}** special survey "
+         f"(expected {int((K.sampling == 'standard').sum()):,} and {int((K.sampling != 'standard').sum()):,}).")
+```
+
+# Suggestions for CalCOFI.io {#sec-recommendations}
+
+1. **Add a gridded or flat CF product alongside the hierarchical file.**
+   A file shaped like the output here (or a flat CF discrete-sampling
+   "point" file with coordinates on every occurrence) would open directly
+   in GeoLibre, ncview and Panoply.
+2. **Add a CalCOFI flag to the `cruise` table.** The selection above has
+   to infer CalCOFI cruises from co-occurring bottle/CTD data and ship
+   history; an explicit programme field (CalCOFI quarterly, anchovy/sardine
+   egg survey, cowcod, other) would replace the inference in @sec-selection and @sec-stations.
+3. **Add a net-side field (`net_location`) to the net table.** ERDDAP has
+   it; without it, paired-net protocol (starboard net) can only be applied
+   by an external lookup, and 336 Pairovet pairs remain unresolved.
+4. **Document that `grid_key` is an area.** Users will naturally treat it
+   as a station; `site_key` is the occupied line/station.
+5. **Provide standardised abundance.** The download stores raw counts with
+   the factors alongside; publishing per-10 m² and per-100 m³ values (as
+   ERDDAP does) would avoid repeated re-derivation.
+6. **Tighten `geospatial_coverage`.** The global attribute (0.0–54.4°N,
+   179.8–77.2°W) reflects the non-CalCOFI and mis-positioned tows rather
+   than the CalCOFI domain.

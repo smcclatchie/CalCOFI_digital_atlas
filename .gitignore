@@ -127,3 +127,7 @@ dmypy.json
 data/
 figures/
 *(conflicted)*
+
+# Rendered Quarto output (regenerate with quarto render)
+manuscript/*.html
+manuscript/*_files/

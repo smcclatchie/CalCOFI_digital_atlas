@@ -56,9 +56,12 @@ Sampling type: high-resolution and special-purpose net surveys (e.g. the
 surveys, 2002-04 cowcod conservation area sampling, spring sardine
 surveys) are kept apart from standard CalCOFI sampling on the `sampling`
 axis and never averaged with it. A tow is "standard" when its line/station
-has CalCOFI bottle or CTD casts (CalCOFI.io `sample` table) AND its cruise
-has >= 80% of tows at such stations; every other tow is "special survey".
-Per cruise, that share is bimodal: 561 of 609 cruises score >= 0.8.
+has CalCOFI bottle or CTD casts (CalCOFI.io `sample` table) AND either its
+cruise contributed CalCOFI bottle/CTD data, or (restored cruises with no
+hydrographic data) >= 80% of the cruise's tows are at such stations. Every
+other tow is "special survey". Hydrographic cruises are judged tow by tow
+because several CalCOFI cruises (e.g. the April 2003-2010 spring cruises)
+added survey stations to the standard pattern.
 
 Paired nets: the protocol uses the right-hand (starboard) net of paired
 samplers. The CalCOFI.io file has no net-side field. Bongo (CB) tows carry
@@ -185,14 +188,21 @@ def read_hydro_sites(release):
                            WHERE dataset_key IN ({datasets}) AND site_key IS NOT NULL""").df().site_key)
 
 
-def classify_sampling(tows, hydro_sites):
-    """'standard' for a tow at a line/station with CalCOFI bottle/CTD casts,
-    on a cruise where >= STANDARD_CRUISE_MIN_HYDRO_STATIONS of tows are at
-    such stations; 'special survey' otherwise. tows needs cruise_key and
-    site_key."""
+def classify_sampling(tows, hydro_sites, per_cruise):
+    """'standard' or 'special survey' per tow. tows needs cruise_key and
+    site_key; per_cruise is select_calcofi_nets()'s per-cruise table.
+
+    A tow is 'standard' when its line/station has CalCOFI bottle/CTD casts
+    AND either its cruise contributed CalCOFI bottle/CTD data (judged tow by
+    tow, so a CalCOFI cruise's extra survey stations become special survey
+    while its standard stations stay standard) or, for restored cruises
+    with no hydrographic data, >= STANDARD_CRUISE_MIN_HYDRO_STATIONS of the
+    cruise's tows are at such stations."""
     at_hydro = tows.site_key.isin(hydro_sites)
-    standard_cruise = at_hydro.groupby(tows.cruise_key).transform("mean") >= STANDARD_CRUISE_MIN_HYDRO_STATIONS
-    return pd.Series(np.where(at_hydro & standard_cruise, SAMPLING[0], SAMPLING[1]), index=tows.index)
+    hydro_cruise = tows.cruise_key.map(per_cruise.hydro_cruise).fillna(False).astype(bool)
+    standard_share = at_hydro.groupby(tows.cruise_key).transform("mean") >= STANDARD_CRUISE_MIN_HYDRO_STATIONS
+    standard = at_hydro & (hydro_cruise | standard_share)
+    return pd.Series(np.where(standard, SAMPLING[0], SAMPLING[1]), index=tows.index)
 
 
 def pairovet_port_nets(nets):
@@ -324,7 +334,7 @@ def main():
     kept = nets[usable].copy()
 
     # Standard CalCOFI sampling vs high-resolution / special surveys.
-    kept["sampling"] = classify_sampling(kept, read_hydro_sites(args.release))
+    kept["sampling"] = classify_sampling(kept, read_hydro_sites(args.release), per_cruise)
     survey_cruises = kept.groupby("cruise_key").sampling.apply(lambda s: (s == SAMPLING[0]).sum() == 0)
     print(f"sampling: {kept.sampling.value_counts().to_dict()} tows; "
           f"{int(survey_cruises.sum())} cruises are entirely special survey")

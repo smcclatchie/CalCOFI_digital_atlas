@@ -9,6 +9,7 @@ dependencies:
   - xarray
   - netcdf4
   - h5py
+  - python-duckdb
   - matplotlib
   - cartopy
   - holoviews
@@ -18,3 +19,7 @@ dependencies:
   - rioxarray
   - pytz
   - ipykernel
+  - jupyter
+  - nbformat
+  - nbclient
+  - quarto
