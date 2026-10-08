@@ -33,8 +33,10 @@ import cartopy.feature as cfeature
 
 from build_gridded_abundance_by_cruise_and_taxon import (
     DEFAULT_RELEASE, DEFAULT_SRC, PARQUET_URL, SAMPLING, classify_sampling, read_cruise_table,
-    read_hydro_sites, select_calcofi_nets,
+    read_hydro_sites, resolve_release, select_calcofi_nets,
 )
+
+RELEASE = resolve_release(DEFAULT_RELEASE)
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repository root
 OUT_DIR = f"{BASE}/figures/exploration"
@@ -64,10 +66,10 @@ con = duckdb.connect()
 con.sql("INSTALL httpfs; LOAD httpfs;")
 crosswalk = con.sql(f"""
     SELECT prev_grid_key AS grid_key, arg_max(grid_key, prev_frac) AS current_grid_key
-    FROM read_parquet('{PARQUET_URL.format(release=DEFAULT_RELEASE, table="grid_crosswalk")}')
+    FROM read_parquet('{PARQUET_URL.format(release=RELEASE, table="grid_crosswalk")}')
     GROUP BY prev_grid_key""").df()
 grid = con.sql(f"""SELECT grid_key AS current_grid_key, pattern
-                   FROM read_parquet('{PARQUET_URL.format(release=DEFAULT_RELEASE, table="grid")}')""").df()
+                   FROM read_parquet('{PARQUET_URL.format(release=RELEASE, table="grid")}')""").df()
 
 net = netCDF4.Dataset(DEFAULT_SRC)["net"]
 tows = pd.DataFrame({
@@ -77,7 +79,7 @@ tows = pd.DataFrame({
     "lat": np.ma.filled(net["latitude"][:].astype("f8"), np.nan),
     "lon": np.ma.filled(net["longitude"][:].astype("f8"), np.nan),
 })
-tows["selected"], per_cruise = select_calcofi_nets(tows, read_cruise_table(DEFAULT_RELEASE))
+tows["selected"], per_cruise = select_calcofi_nets(tows, read_cruise_table(RELEASE))
 per_cruise.to_csv(OUT_CSV)
 
 tows = (tows.join(per_cruise.reason, on="cruise_key")
@@ -85,7 +87,7 @@ tows = (tows.join(per_cruise.reason, on="cruise_key")
             .merge(grid, on="current_grid_key", how="left"))
 tows["pattern"] = tows.pattern.fillna("not on grid")
 sel, drop = tows[tows.selected], tows[~tows.selected].copy()
-sel = sel.assign(sampling=classify_sampling(sel, read_hydro_sites(DEFAULT_RELEASE), per_cruise))
+sel = sel.assign(sampling=classify_sampling(sel, read_hydro_sites(RELEASE), per_cruise))
 n_survey_cruises = int((sel.groupby("cruise_key").sampling.agg(lambda s: (s == SAMPLING[0]).sum()) == 0).sum())
 n_hydro = sel[sel.reason == "hydrographic CalCOFI cruise"].cruise_key.nunique()
 n_rest = sel[sel.reason != "hydrographic CalCOFI cruise"].cruise_key.nunique()
@@ -109,7 +111,7 @@ panels = [
      f"Selected tows by sampling type: standard CalCOFI stations vs high-resolution / special surveys\n"
      f"{n_survey_cruises} cruises are entirely special survey (e.g. 1980–86 anchovy, 2002–04 cowcod)"),
 ]
-release_note = f"SWFSC ichthyoplankton net tows, CalCOFI.io {DEFAULT_RELEASE}"
+release_note = f"SWFSC ichthyoplankton net tows, CalCOFI.io {RELEASE}"
 for i, ((d, extent, size, title), name) in enumerate(zip(panels, OUT_NAMES)):
     aspect = (extent[3] - extent[2]) / (extent[1] - extent[0])
     fig = plt.figure(figsize=(FIG_WIDTH_IN, FIG_WIDTH_IN * aspect + 1.4))

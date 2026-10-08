@@ -20,7 +20,7 @@ shared regular lat/lon grid.
 Usage (defaults are this project's own paths and release):
     python build_gridded_abundance_by_cruise_and_taxon.py \
         --src swfsc_ichthyo.nc --out swfsc_ichthyo_calcofi_gridded.nc \
-        --release v2026.10.06
+        --release latest
 
 Dependencies: numpy, pandas, netCDF4, duckdb (reads the public CalCOFI.io
 Parquet `cruise` table; no credentials needed). Internet access is also
@@ -39,7 +39,7 @@ CalCOFI selection (select_calcofi_nets) -- applied per net tow:
   3. Domain: 18-42N (California-Oregon border), 140-105W, outside the Gulf
      of California.
 A tow is kept if its cruise passes 1 or 2, the tow is in the domain, and
-it has a grid_key (sits on a CalCOFI grid station). Release v2026.10.06:
+it has a grid_key (sits on a CalCOFI grid station). Release v2026.10.08:
 609 cruises (519 + 90), 68,675 of 76,512 net tows.
 
 Standardisation (verified against NOAA ERDDAP erdCalCOFIlrvcnt, exact
@@ -97,6 +97,7 @@ chunks on every other axis, so only chunks holding real data are stored.
 
 import argparse
 import os
+import urllib.request
 from datetime import datetime, timezone
 
 import duckdb
@@ -110,7 +111,11 @@ REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BASE_DIR = os.path.join(REPO_DIR, "data", "CalCOFI_ichthyoplankton", "ichthyoplankton_from_calCOFI.io")
 DEFAULT_SRC = os.path.join(BASE_DIR, "swfsc_ichthyo.nc")
 DEFAULT_OUT = os.path.join(BASE_DIR, "swfsc_ichthyo_calcofi_gridded.nc")
-DEFAULT_RELEASE = "v2026.10.06"
+# CalCOFI.io can withdraw a release (v2026.10.06 was retired on 2026-10-08),
+# so the default is the current release, resolved at run time; the release
+# actually used is recorded in the output's `source` attribute.
+DEFAULT_RELEASE = "latest"
+RELEASES_URL = "https://storage.googleapis.com/calcofi-db/ducklake/releases"
 PARQUET_URL = "https://storage.googleapis.com/calcofi-db/ducklake/releases/{release}/parquet/{table}.parquet"
 
 # ---- CalCOFI selection ----
@@ -172,6 +177,15 @@ def points_in_polygon(lon, lat, polygon):
         inside ^= crosses
         x1, y1 = x2, y2
     return inside
+
+
+def resolve_release(release):
+    """'latest' -> the current CalCOFI.io release tag (e.g. 'v2026.10.08');
+    any other value is returned unchanged."""
+    if release != "latest":
+        return release
+    with urllib.request.urlopen(f"{RELEASES_URL}/latest.txt", timeout=60) as r:
+        return r.read().decode().strip()
 
 
 def read_cruise_table(release):
@@ -284,14 +298,13 @@ def write_sparse(var, table, index_cols, value_col):
         var[tuple(row[:-1])] = row[-1]
 
 
-def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--src", default=DEFAULT_SRC, help="CalCOFI.io swfsc_ichthyo.nc")
-    ap.add_argument("--out", default=DEFAULT_OUT, help="output gridded NetCDF")
-    ap.add_argument("--release", default=DEFAULT_RELEASE, help="CalCOFI.io release for the cruise table")
-    args = ap.parse_args()
-
-    src = netCDF4.Dataset(args.src, "r")
+def load_selected_occurrences(src_path, release):
+    """Read swfsc_ichthyo.nc and apply every per-tow rule shared by all
+    outputs: CalCOFI selection, starboard Pairovet nets, standardisation
+    factor, sampling type, egg/larva occurrences. Returns (kept nets
+    DataFrame, occurrence DataFrame with standardised `density`, per-cruise
+    selection table, source release tag)."""
+    src = netCDF4.Dataset(src_path, "r")
     occ = src.groups["occurrence"]
     net = src.groups["net"]
     net_n = src.dimensions["net_n"].size
@@ -311,10 +324,11 @@ def main():
         "std_haul_factor": num(net.variables["std_haul_factor"]),
         "prop_sorted": num(net.variables["prop_sorted"]),
         "volume_sampled": num(net.variables["volume_sampled"]),
+        "time": num(net.variables["time"]),   # seconds since 1970-01-01 UTC
     })
 
     # ---- CalCOFI selection, per net tow ----
-    selected, per_cruise = select_calcofi_nets(nets, read_cruise_table(args.release))
+    selected, per_cruise = select_calcofi_nets(nets, read_cruise_table(release))
     n_cruises = int((per_cruise.reason != "dropped").sum())
     print(f"selected {int(selected.sum())} of {net_n} net tows; {n_cruises} cruises")
 
@@ -337,7 +351,7 @@ def main():
     kept = nets[usable].copy()
 
     # Standard CalCOFI sampling vs high-resolution / special surveys.
-    kept["sampling"] = classify_sampling(kept, read_hydro_sites(args.release), per_cruise)
+    kept["sampling"] = classify_sampling(kept, read_hydro_sites(release), per_cruise)
     survey_cruises = kept.groupby("cruise_key").sampling.apply(lambda s: (s == SAMPLING[0]).sum() == 0)
     print(f"sampling: {kept.sampling.value_counts().to_dict()} tows; "
           f"{int(survey_cruises.sum())} cruises are entirely special survey")
@@ -359,6 +373,20 @@ def main():
     occ_df = occ_df.join(kept[["cruise_key", "site_key", "tow_type", "sampling", "factor"]], on="net")
     occ_df["density"] = occ_df["count"] * occ_df.factor
     print(f"keeping {len(occ_df)} egg/larva occurrence rows")
+    return kept, occ_df, per_cruise, src_release
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--src", default=DEFAULT_SRC, help="CalCOFI.io swfsc_ichthyo.nc")
+    ap.add_argument("--out", default=DEFAULT_OUT, help="output gridded NetCDF")
+    ap.add_argument("--release", default=DEFAULT_RELEASE,
+                    help="CalCOFI.io release for the cruise/sample tables ('latest' = current)")
+    args = ap.parse_args()
+    args.release = resolve_release(args.release)
+    print(f"CalCOFI.io release {args.release}")
+
+    kept, occ_df, per_cruise, src_release = load_selected_occurrences(args.src, args.release)
 
     # ---- station (occupied line/station) positions: median of kept tows ----
     station_pos = kept.groupby("site_key")[["lat", "lon"]].median()

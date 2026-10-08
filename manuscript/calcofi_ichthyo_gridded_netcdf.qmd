@@ -37,7 +37,7 @@ REPO = os.path.abspath("..")
 sys.path.insert(0, os.path.join(REPO, "python"))
 import build_gridded_abundance_by_cruise_and_taxon as build  # noqa: E402
 
-RELEASE = build.DEFAULT_RELEASE
+RELEASE = build.resolve_release(build.DEFAULT_RELEASE)   # current CalCOFI.io release
 SRC = build.DEFAULT_SRC          # CalCOFI.io swfsc_ichthyo.nc download
 OUT = build.DEFAULT_OUT          # gridded NetCDF written by this document
 BUILD_SCRIPT = os.path.join(REPO, "python", "build_gridded_abundance_by_cruise_and_taxon.py")
@@ -91,7 +91,7 @@ The conversion script also runs on its own, without this document:
 
 ```bash
 python python/build_gridded_abundance_by_cruise_and_taxon.py \
-    --src swfsc_ichthyo.nc --out swfsc_ichthyo_calcofi_gridded.nc --release v2026.10.06
+    --src swfsc_ichthyo.nc --out swfsc_ichthyo_calcofi_gridded.nc --release latest
 ```
 
 # The source file {#sec-source}
