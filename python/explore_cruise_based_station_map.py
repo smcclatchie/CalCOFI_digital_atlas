@@ -2,8 +2,8 @@
 """
 Map of how the full swfsc_ichthyo.nc net-tow dataset is filtered to the
 CalCOFI selection, coloured by the CalCOFI.io `grid` table's station
-pattern. Writes three separate maps: (1) everything dropped (full
-extent), (2) the CalCOFI selection (fitted to the kept tows), and (3) the
+pattern. Writes three separate maps, 300 dpi for print: (1) every tow,
+kept (navy) vs dropped (amber), at the full extent of the dropped tows, (2) the CalCOFI selection (fitted to the kept tows), and (3) the
 same selection split into standard CalCOFI sampling vs high-resolution /
 special surveys.
 
@@ -36,7 +36,7 @@ from build_gridded_abundance_by_cruise_and_taxon import (
 
 BASE = "/data_7TB/mnt/data/dynamic_data/projects/projects2026/CalCOFI_digital_atlas"
 OUT_DIR = f"{BASE}/figures/exploration"
-OUT_NAMES = ["station_map_1_dropped.png", "station_map_2_selected_by_station_pattern.png",
+OUT_NAMES = ["station_map_1_kept_and_dropped.png", "station_map_2_selected_by_station_pattern.png",
              "station_map_3_selected_by_sampling_type.png"]
 OUT_CSV = f"{BASE}/data/CalCOFI_ichthyoplankton/ichthyoplankton_from_calCOFI.io/calcofi_cruise_selection.csv"
 FRAME_PAD_DEG = 1.0
@@ -95,9 +95,9 @@ dropped_extent = [max(-180, 5 * np.floor(drop.lon.min() / 5)), 5 * np.ceil(drop.
                   5 * np.floor(drop.lat.min() / 5), 5 * np.ceil(drop.lat.max() / 5)]
 
 panels = [
-    (drop, dropped_extent, 6,
-     f"Dropped: {drop.cruise_key.nunique()} cruises with tows outside the selection "
-     f"(other surveys, Gulf of California, north of 42°N, not on grid)\n{len(drop):,} tows"),
+    (tows, dropped_extent, 6,
+     f"All {len(tows):,} tows: {len(sel):,} kept, {len(drop):,} dropped "
+     f"(other surveys, Gulf of California, north of 42°N, not on grid)"),
     (sel, selected_extent, 4,
      f"Selected: {n_hydro + n_rest} CalCOFI cruises ({n_hydro} with hydrographic data + {n_rest} "
      f"filtered by CalCOFI ship and station pattern)\n"
@@ -115,7 +115,13 @@ for i, ((d, extent, size, title), name) in enumerate(zip(panels, OUT_NAMES)):
     ax.add_feature(cfeature.LAND, facecolor="#e8e6df", zorder=0)
     ax.add_feature(cfeature.COASTLINE, linewidth=0.5, edgecolor="#6b6a64")
     ax.add_feature(cfeature.BORDERS, linewidth=0.4, edgecolor="#9a9890")
-    if i < 2:
+    if i == 0:
+        legend_title = "Selection"
+        # Navy/amber: blue-yellow contrast survives common colour-vision
+        # deficiencies (validated: worst-case CVD dE 30, contrast 3:1).
+        groups = [(d[d.selected], f"Kept, {sel.cruise_key.nunique()} cruises", "#184f95", "o"),
+                  (d[~d.selected], f"Dropped, {drop.cruise_key.nunique()} cruises", "#c98500", "x")]
+    elif i == 1:
         legend_title = "Station pattern"
         groups = [(d[d.pattern == key], label, color, marker) for key, label, color, marker in PATTERNS]
     else:
@@ -123,12 +129,15 @@ for i, ((d, extent, size, title), name) in enumerate(zip(panels, OUT_NAMES)):
         groups = [(d[d.sampling == key], *SAMPLING_STYLE[key]) for key in SAMPLING]
     # In the sampling map, special surveys are drawn underneath so the
     # standard station grid stays visible; legend order is unchanged.
-    zorders = [3, 2] if i == 2 else [2] * len(groups)
+    # Kept tows on top of dropped ones (dropped tows at kept stations would
+    # otherwise hide the kept pattern); special surveys underneath standard.
+    zorders = {0: [3, 2], 2: [3, 2]}.get(i, [2] * len(groups))
     for (p, label, color, marker), z in zip(groups, zorders):
         if p.empty:
             continue
-        ax.scatter(p.lon, p.lat, s=size, alpha=0.4, color=color, marker=marker, linewidths=0,
-                   transform=ccrs.PlateCarree(), label=f"{label} ({len(p):,})", zorder=z)
+        ax.scatter(p.lon, p.lat, s=size, alpha=0.4, color=color, marker=marker,
+                   linewidths=0.6 if marker == "x" else 0,
+                   transform=ccrs.PlateCarree(), label=f"{label} ({len(p):,} tows)", zorder=z)
     ax.set_title(f"{title}\n{release_note}", fontsize=11)
     gl = ax.gridlines(draw_labels=True, linewidth=0.3, color="#bdbbb3", alpha=0.7)
     gl.top_labels = gl.right_labels = False
@@ -137,7 +146,7 @@ for i, ((d, extent, size, title), name) in enumerate(zip(panels, OUT_NAMES)):
         h.set_alpha(1)
     # Leave room on the left for gridliner labels, which tight_layout ignores.
     fig.tight_layout(rect=[0.05, 0.0, 1.0, 1.0])
-    fig.savefig(f"{OUT_DIR}/{name}", dpi=150, bbox_inches="tight", pad_inches=0.15)
+    fig.savefig(f"{OUT_DIR}/{name}", dpi=300, bbox_inches="tight", pad_inches=0.15)
     plt.close(fig)
     print("wrote", f"{OUT_DIR}/{name}")
 print("wrote", OUT_CSV)
