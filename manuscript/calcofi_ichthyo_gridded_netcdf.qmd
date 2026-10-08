@@ -16,6 +16,12 @@ execute:
   warning: false
 ---
 
+# Setup: paths and imports {.unnumbered}
+
+Every code cell below uses these paths and imports. Paths are relative to
+the repository root; the source file, output file and CalCOFI.io release
+default to the values in the conversion script.
+
 ```{python}
 #| label: setup
 import os
