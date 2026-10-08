@@ -80,6 +80,9 @@ def main():
                 .agg(n_tows=("tow", "size"), time=("time", "min"))
                 .reset_index())
     tows["date"] = pd.to_datetime(tows.time, unit="s", utc=True).dt.date
+    # Plain ISO string too: GeoLibre's Time Slider binding detects ISO date
+    # strings, epoch numbers and bare years, not necessarily Parquet DATE.
+    tows["date_iso"] = tows.date.astype(str)
     tows["year"] = tows.cruise_key.str[:4].astype(int)
     tows["month"] = tows.cruise_key.str[5:7].astype(int)
     tows["ship_name"] = tows.cruise_key.map(per_cruise.ship_name)
@@ -94,16 +97,18 @@ def main():
                    .rename(columns={"tow_type": "net_type"})
                    .merge(tows, on=["cruise_key", "sampling", "net_type", "site_key"]))
     catch["abundance"] = catch.density_sum / catch.n_tows
+    catch["log10_abundance"] = np.log10(catch.abundance)   # skewed: for graduated styling
     catch["units"] = (catch.net_type == build.MANTA).map(UNITS)
     catch = catch.drop(columns="density_sum").join(read_taxon_table(args.release), on="taxon_key")
     print(f"{len(catch)} non-zero catch rows, {catch.taxon_key.nunique()} taxa "
           f"({catch.drop_duplicates('taxon_key').common_name.notna().sum()} with a common name)")
 
-    column_order = ["cruise_key", "date", "year", "month", "ship_name", "sampling", "net_type",
+    column_order = ["cruise_key", "date", "date_iso", "year", "month", "ship_name", "sampling", "net_type",
                     "net_description", "site_key", "line", "station", "lat", "lon", "n_tows"]
-    catch = catch[column_order[:7] + ["life_stage", "taxon_key", "scientific_name", "common_name",
-                                      "rank", "family", "order_taxon", "class", "abundance", "units"]
-                  + column_order[7:]]
+    catch = catch[column_order[:8] + ["life_stage", "taxon_key", "scientific_name", "common_name",
+                                      "rank", "family", "order_taxon", "class", "abundance",
+                                      "log10_abundance", "units"]
+                  + column_order[8:]]
     tows = tows[column_order]
 
     os.makedirs(args.out_dir, exist_ok=True)
