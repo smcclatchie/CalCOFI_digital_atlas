@@ -104,7 +104,10 @@ import netCDF4
 import numpy as np
 import pandas as pd
 
-BASE_DIR = "/data_7TB/mnt/data/dynamic_data/projects/projects2026/CalCOFI_digital_atlas/data/CalCOFI_ichthyoplankton/ichthyoplankton_from_calCOFI.io"
+# Paths are relative to the repository root, so a clone works anywhere;
+# --src/--out override them.
+REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.join(REPO_DIR, "data", "CalCOFI_ichthyoplankton", "ichthyoplankton_from_calCOFI.io")
 DEFAULT_SRC = os.path.join(BASE_DIR, "swfsc_ichthyo.nc")
 DEFAULT_OUT = os.path.join(BASE_DIR, "swfsc_ichthyo_calcofi_gridded.nc")
 DEFAULT_RELEASE = "v2026.10.06"

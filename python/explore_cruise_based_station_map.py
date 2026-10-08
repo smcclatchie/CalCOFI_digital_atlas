@@ -21,6 +21,8 @@ station). Tows with no grid_key at all are "not on grid".
 
 Also writes the per-cruise decision (with reason) as CSV.
 """
+import os
+
 import duckdb
 import netCDF4
 import numpy as np
@@ -34,8 +36,9 @@ from build_gridded_abundance_by_cruise_and_taxon import (
     read_hydro_sites, select_calcofi_nets,
 )
 
-BASE = "/data_7TB/mnt/data/dynamic_data/projects/projects2026/CalCOFI_digital_atlas"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # repository root
 OUT_DIR = f"{BASE}/figures/exploration"
+os.makedirs(OUT_DIR, exist_ok=True)       # figures/ is gitignored, absent in a fresh clone
 OUT_NAMES = ["station_map_1_kept_and_dropped.png", "station_map_2_selected_by_station_pattern.png",
              "station_map_3_selected_by_sampling_type.png"]
 OUT_CSV = f"{BASE}/data/CalCOFI_ichthyoplankton/ichthyoplankton_from_calCOFI.io/calcofi_cruise_selection.csv"

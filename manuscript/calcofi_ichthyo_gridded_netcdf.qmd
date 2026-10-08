@@ -18,8 +18,6 @@ execute:
 
 ```{python}
 #| label: setup
-#| code-fold: true
-#| code-summary: "Setup: paths and imports"
 import os
 import subprocess
 import sys
@@ -64,6 +62,31 @@ gridded NetCDF:
 
 @sec-recommendations lists suggestions for the CalCOFI.io
 database that would make most of this processing unnecessary.
+
+## Reproducing this document {.unnumbered}
+
+All code is in the repository
+<https://github.com/smcclatchie/CalCOFI_digital_atlas>; paths are relative
+to the repository root. Rendering needs internet access (CalCOFI.io
+Parquet tables and NOAA ERDDAP) and takes about two minutes.
+
+```bash
+git clone https://github.com/smcclatchie/CalCOFI_digital_atlas.git
+cd CalCOFI_digital_atlas
+conda env create -f environment.yml
+conda activate calcofi
+mkdir -p data/CalCOFI_ichthyoplankton/ichthyoplankton_from_calCOFI.io
+# copy the CalCOFI.io download swfsc_ichthyo.nc into that directory, then:
+cd manuscript
+quarto render calcofi_ichthyo_gridded_netcdf.qmd
+```
+
+The conversion script also runs on its own, without this document:
+
+```bash
+python python/build_gridded_abundance_by_cruise_and_taxon.py \
+    --src swfsc_ichthyo.nc --out swfsc_ichthyo_calcofi_gridded.nc --release v2026.10.06
+```
 
 # The source file {#sec-source}
 
