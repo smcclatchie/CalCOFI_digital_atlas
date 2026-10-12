@@ -1,9 +1,9 @@
 # build_bottle_standard_depths.py
 
 """
-Temperature, salinity and density (sigma-theta) at the CalCOFI standard
-depths, one row per cast and depth, from the CalCOFI bottle database, for
-the hydrographic atlas's seasonal composites.
+Temperature, salinity, density (sigma-theta), dissolved oxygen (ml/L),
+nitrate and silicate (umol/L) at the CalCOFI standard depths, one row per
+cast and depth, from the CalCOFI bottle database, for the hydrographic atlas.
 
 Source: the CalCOFI.org database CSVs (194903-202105_Bottle.csv and _Cast.csv,
 https://calcofi.org/downloads/database/), NOT CalCOFI.io's calcofi_bottle.nc:
@@ -15,7 +15,8 @@ Standard depths: 0, 10, 20, 30, 50, 75, 100, 125, 150, 200, 250, 300, 400,
 standard depth), RecInd 3 (a bottle observed exactly there) or RecInd 5.
 RecInd 6 only ever appears as a second copy beside a 3 and is dropped.
 
-Quality flags (T_qual, S_qual, SThtaq), as read from the data's own pattern
+Quality flags (T_qual, S_qual, SThtaq; O_qual, NO3q, SiO3qu follow the same
+pattern), as read from the data's own pattern
 (flag x RecInd): 9 = missing (never has a value); 8 = questionable (only on
 observed bottles) -> excluded; 6 = interpolated/estimated (almost all on the
 RecInd 7 standard-depth records) -> kept; blank -> kept; the rare other codes
@@ -50,10 +51,17 @@ STANDARD_DEPTHS = [0, 10, 20, 30, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500
 KEEP_FLAGS = {6}                     # plus blank (NaN)
 T_RANGE = (-2, 35)                   # degC; unflagged fill values (99) and bad interpolations sit outside
 S_RANGE = (20, 35.5)                 # wide enough for real nearshore plume values (~28)
+# Oxygen (ml/L), nitrate and silicate (umol/L): the same flag rules; ranges
+# catch unflagged gross errors (e.g. an oxygen value of -200) and allow small
+# negative nutrient readings at the detection limit.
+O2_RANGE = (0, 12)
+NO3_RANGE = (-0.5, 60)
+SIO3_RANGE = (-0.5, 200)
 SEASONS = {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: "spring",
            6: "summer", 7: "summer", 8: "summer", 9: "autumn", 10: "autumn", 11: "autumn"}
 VARIABLES = {"temperature": ("T_degC", "T_qual"), "salinity": ("Salnty", "S_qual"),
-             "sigma_theta": ("STheta", "SThtaq")}
+             "sigma_theta": ("STheta", "SThtaq"), "oxygen": ("O2ml_L", "O_qual"),
+             "nitrate": ("NO3uM", "NO3q"), "silicate": ("SiO3uM", "SiO3qu")}
 
 
 def main():
@@ -89,6 +97,10 @@ def main():
     out.loc[bad_s, "salinity"] = None
     out.loc[bad_t | bad_s, "sigma_theta"] = None
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded (before the domain filter)")
+    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE)]:
+        bad = ~out[name].between(*rng) & out[name].notna()
+        out.loc[bad, name] = None
+        print(f"  range check: {int(bad.sum())} {name} values excluded")
     out = out.dropna(subset=list(VARIABLES), how="all")
 
     # ---- cast metadata, domain, season ----

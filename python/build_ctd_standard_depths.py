@@ -1,8 +1,9 @@
 # build_ctd_standard_depths.py
 
 """
-Temperature, salinity and density (sigma-theta) at the CalCOFI standard
-depths, one row per CTD cast and depth, from CalCOFI.io's CTD cast dataset
+Temperature, salinity, density (sigma-theta), dissolved oxygen (ml/L),
+nitrate and silicate (umol/L) at the CalCOFI standard depths, one row per
+CTD cast and depth, from CalCOFI.io's CTD cast dataset
 (calcofi_ctd-cast, 1993 onward), for the hydrographic atlas. The output has
 the same columns as build_bottle_standard_depths.py's, so the atlas treats
 both sources alike (they are never mixed).
@@ -24,6 +25,14 @@ Variables:
   sigma_theta  recomputed (EOS-80, eos80.py) from the temperature and the
                salinity chosen, as in the bottle database's STheta; the CTD
                table's own sigma_theta_1 uses sensor 1's uncorrected salinity
+  oxygen       sensor oxygen, ml/L: oxygen_ml_l_ave_sta_corr (mean of the two
+               sensors, corrected to the station's bottle oxygens), else the
+               cruise-corrected mean, else sensor 1 corrected (station, then
+               cruise), else sensor 1 uncorrected; oxygen_source records which
+  nitrate,     the bottle values sampled on the CTD casts (btl_nitrate,
+  silicate     btl_silicate), at their bottle depths (irregular, ~2-520 m),
+               interpolated to the standard depths across gaps up to
+               BOTTLE_MAX_GAP_M; 0 m = a bottle within BOTTLE_SURFACE_MAX_M
 Quality flags 8 (questionable) and 9 (missing) are excluded; the same wide
 range check as the bottle data follows.
 
@@ -42,25 +51,31 @@ import numpy as np
 import pandas as pd
 
 import build_gridded_abundance_by_cruise_and_taxon as build
-from build_bottle_standard_depths import S_RANGE, SEASONS, STANDARD_DEPTHS, T_RANGE
+from build_bottle_standard_depths import (NO3_RANGE, O2_RANGE, S_RANGE, SEASONS, SIO3_RANGE,
+                                         STANDARD_DEPTHS, T_RANGE)
 from eos80 import pressure_from_depth, sigma_theta
 
 OUT = os.path.join(build.REPO_DIR, "data", "CalCOFI_CTD", "calcofi_ctd_standard_depths.parquet")
 DB = "https://storage.googleapis.com/calcofi-db/ducklake/releases/{release}/parquet"
 SALINITY_PREFERENCE = ["salinity_ave_corr", "salinity_1_corr", "salinity_1"]
-TYPES = ["temperature_ave"] + SALINITY_PREFERENCE
+OXYGEN_PREFERENCE = ["oxygen_ml_l_ave_sta_corr", "oxygen_ml_l_ave_cruise_corr", "oxygen_ml_l_1_sta_corr",
+                     "oxygen_ml_l_1_cruise_corr", "oxygen_ml_l_1"]
+BOTTLE_TYPES = {"nitrate": "btl_nitrate", "silicate": "btl_silicate"}
+TYPES = ["temperature_ave"] + SALINITY_PREFERENCE + OXYGEN_PREFERENCE + list(BOTTLE_TYPES.values())
 BAD_FLAGS = ("8", "9")
 SURFACE_MAX_M = 3.0
 MAX_GAP_M = 20.0
+BOTTLE_SURFACE_MAX_M = 5.0           # the top bottle is usually at ~2 m
+BOTTLE_MAX_GAP_M = 80.0              # bottles are 10-75 m apart, widest at depth
 TARGETS = np.array(STANDARD_DEPTHS, dtype=float)
 
 
-def at_standard_depths(z, v):
+def at_standard_depths(z, v, max_gap=MAX_GAP_M, surface_max=SURFACE_MAX_M):
     """Profile (depth z ascending, value v) -> values at TARGETS (NaN where not supported)."""
     out = np.full(len(TARGETS), np.nan)
     if not len(z):
         return out
-    if z[0] <= SURFACE_MAX_M:
+    if z[0] <= surface_max:
         out[0] = v[0]
     for k, target in enumerate(TARGETS[1:], start=1):
         i = np.searchsorted(z, target)
@@ -68,7 +83,7 @@ def at_standard_depths(z, v):
             out[k] = v[i]
         elif i > 0 and abs(z[i - 1] - target) <= 0.5:
             out[k] = v[i - 1]
-        elif 0 < i < len(z) and z[i] - z[i - 1] <= MAX_GAP_M:
+        elif 0 < i < len(z) and z[i] - z[i - 1] <= max_gap:
             out[k] = v[i - 1] + (v[i] - v[i - 1]) * (target - z[i - 1]) / (z[i] - z[i - 1])
     return out
 
@@ -100,29 +115,37 @@ def main():
     profiles = {k: g for k, g in obs.groupby(["sample_key", "type"])}
     rows = []
     for key in casts.index:
-        def profile(t):
+        def profile(t, **gaps):
             g = profiles.get((key, t))
             if g is None:
                 return None
             g = g.groupby("z", as_index=False).v.mean().sort_values("z")
-            return at_standard_depths(g.z.to_numpy(), g.v.to_numpy())
+            return at_standard_depths(g.z.to_numpy(), g.v.to_numpy(), **gaps)
+
+        def preferred(types):
+            # The first type in the list with any value at a standard depth.
+            for t in types:
+                p = profile(t)
+                if p is not None and np.isfinite(p).any():
+                    return p, t
+            return np.full(len(TARGETS), np.nan), None
+
+        empty = np.full(len(TARGETS), np.nan)
         temp = profile("temperature_ave")
-        sal, source = None, None
-        for t in SALINITY_PREFERENCE:
-            sal = profile(t)
-            if sal is not None and np.isfinite(sal).any():
-                source = t
-                break
-        if temp is None:
-            temp = np.full(len(TARGETS), np.nan)
-        if source is None:
-            sal = np.full(len(TARGETS), np.nan)
-        rows.append(pd.DataFrame({"sample_key": key, "depth_m": STANDARD_DEPTHS, "temperature": temp,
-                                  "salinity": sal, "salinity_source": source}))
+        sal, sal_source = preferred(SALINITY_PREFERENCE)
+        oxy, oxy_source = preferred(OXYGEN_PREFERENCE)
+        bottles = {name: profile(t, max_gap=BOTTLE_MAX_GAP_M, surface_max=BOTTLE_SURFACE_MAX_M)
+                   for name, t in BOTTLE_TYPES.items()}
+        rows.append(pd.DataFrame({"sample_key": key, "depth_m": STANDARD_DEPTHS,
+                                  "temperature": empty if temp is None else temp,
+                                  "salinity": sal, "salinity_source": sal_source,
+                                  "oxygen": oxy, "oxygen_source": oxy_source,
+                                  **{n: empty if p is None else p for n, p in bottles.items()}}))
     out = pd.concat(rows, ignore_index=True).merge(casts, left_on="sample_key", right_index=True)
-    out = out.dropna(subset=["temperature", "salinity"], how="all")
+    out = out.dropna(subset=["temperature", "salinity", "oxygen", "nitrate", "silicate"], how="all")
     print(f"standard-depth rows: {len(out)}; salinity source by cast:",
           out.groupby("salinity_source").sample_key.nunique().to_dict())
+    print("  oxygen source by cast:", out.groupby("oxygen_source").sample_key.nunique().to_dict())
 
     # ---- range check, density ----
     bad_t = ~out.temperature.between(*T_RANGE) & out.temperature.notna()
@@ -130,8 +153,12 @@ def main():
     out.loc[bad_t, "temperature"] = np.nan
     out.loc[bad_s, "salinity"] = np.nan
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded")
+    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE)]:
+        bad = ~out[name].between(*rng) & out[name].notna()
+        out.loc[bad, name] = np.nan
+        print(f"  range check: {int(bad.sum())} {name} values excluded")
     out["sigma_theta"] = sigma_theta(out.temperature, out.salinity, pressure_from_depth(out.depth_m, out.lat))
-    out = out.dropna(subset=["temperature", "salinity", "sigma_theta"], how="all")
+    out = out.dropna(subset=["temperature", "salinity", "sigma_theta", "oxygen", "nitrate", "silicate"], how="all")
 
     # ---- domain, season, station keys ----
     in_domain = (out.lat.between(*build.DOMAIN_LAT) & out.lon.between(*build.DOMAIN_LON)
@@ -149,7 +176,8 @@ def main():
                        for l, s in zip(out.line, out.station)]
     out["cast"] = out.sample_key.str.split(":").str[-1]
     cols = ["cast", "cruise_key", "date", "year", "month", "season", "season_year", "site_key", "line", "station",
-            "lat", "lon", "depth_m", "temperature", "salinity", "sigma_theta", "salinity_source"]
+            "lat", "lon", "depth_m", "temperature", "salinity", "sigma_theta", "oxygen", "nitrate", "silicate",
+            "salinity_source", "oxygen_source"]
     out = out[cols].sort_values(["date", "cast", "depth_m"])
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
