@@ -33,6 +33,8 @@ Variables:
   silicate,    btl_silicate, btl_phosphate), at their bottle depths
   phosphate    (irregular, ~2-520 m), interpolated to the standard depths
                across gaps up to BOTTLE_MAX_GAP_M; 0 m = a bottle within BOTTLE_SURFACE_MAX_M
+  dynamic_height  CalCOFI's dynamic height (dyn m) from the surface down to each
+               depth, so at 500 m the 0/500 dbar dynamic height (downcasts)
 Quality flags 8 (questionable) and 9 (missing) are excluded; the same wide
 range check as the bottle data follows.
 
@@ -51,7 +53,7 @@ import numpy as np
 import pandas as pd
 
 import build_gridded_abundance_by_cruise_and_taxon as build
-from build_bottle_standard_depths import (NO3_RANGE, O2_RANGE, PO4_RANGE, S_RANGE, SEASONS, SIO3_RANGE,
+from build_bottle_standard_depths import (DYNHT_RANGE, NO3_RANGE, O2_RANGE, PO4_RANGE, S_RANGE, SEASONS, SIO3_RANGE,
                                          STANDARD_DEPTHS, T_RANGE)
 from eos80 import pressure_from_depth, sigma_theta
 
@@ -61,7 +63,7 @@ SALINITY_PREFERENCE = ["salinity_ave_corr", "salinity_1_corr", "salinity_1"]
 OXYGEN_PREFERENCE = ["oxygen_ml_l_ave_sta_corr", "oxygen_ml_l_ave_cruise_corr", "oxygen_ml_l_1_sta_corr",
                      "oxygen_ml_l_1_cruise_corr", "oxygen_ml_l_1"]
 BOTTLE_TYPES = {"nitrate": "btl_nitrate", "silicate": "btl_silicate", "phosphate": "btl_phosphate"}
-TYPES = ["temperature_ave"] + SALINITY_PREFERENCE + OXYGEN_PREFERENCE + list(BOTTLE_TYPES.values())
+TYPES = ["temperature_ave", "dynamic_height"] + SALINITY_PREFERENCE + OXYGEN_PREFERENCE + list(BOTTLE_TYPES.values())
 BAD_FLAGS = ("8", "9")
 SURFACE_MAX_M = 3.0
 MAX_GAP_M = 20.0
@@ -132,12 +134,14 @@ def main():
 
         empty = np.full(len(TARGETS), np.nan)
         temp = profile("temperature_ave")
+        dynht = profile("dynamic_height")
         sal, sal_source = preferred(SALINITY_PREFERENCE)
         oxy, oxy_source = preferred(OXYGEN_PREFERENCE)
         bottles = {name: profile(t, max_gap=BOTTLE_MAX_GAP_M, surface_max=BOTTLE_SURFACE_MAX_M)
                    for name, t in BOTTLE_TYPES.items()}
         rows.append(pd.DataFrame({"sample_key": key, "depth_m": STANDARD_DEPTHS,
                                   "temperature": empty if temp is None else temp,
+                                  "dynamic_height": empty if dynht is None else dynht,
                                   "salinity": sal, "salinity_source": sal_source,
                                   "oxygen": oxy, "oxygen_source": oxy_source,
                                   **{n: empty if p is None else p for n, p in bottles.items()}}))
@@ -153,7 +157,8 @@ def main():
     out.loc[bad_t, "temperature"] = np.nan
     out.loc[bad_s, "salinity"] = np.nan
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded")
-    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE)]:
+    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE),
+                      ("dynamic_height", DYNHT_RANGE)]:
         bad = ~out[name].between(*rng) & out[name].notna()
         out.loc[bad, name] = np.nan
         print(f"  range check: {int(bad.sum())} {name} values excluded")
@@ -177,6 +182,7 @@ def main():
     out["cast"] = out.sample_key.str.split(":").str[-1]
     cols = ["cast", "cruise_key", "date", "year", "month", "season", "season_year", "site_key", "line", "station",
             "lat", "lon", "depth_m", "temperature", "salinity", "sigma_theta", "oxygen", "nitrate", "silicate", "phosphate",
+            "dynamic_height",
             "salinity_source", "oxygen_source"]
     out = out[cols].sort_values(["date", "cast", "depth_m"])
 

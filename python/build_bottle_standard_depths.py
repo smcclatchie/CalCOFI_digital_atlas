@@ -58,12 +58,16 @@ O2_RANGE = (0, 12)
 NO3_RANGE = (-0.5, 60)
 SIO3_RANGE = (-0.5, 200)
 PO4_RANGE = (-0.1, 6)
+DYNHT_RANGE = (0, 3)                 # dynamic metres
+# CalCOFI's reported dynamic height (R_DYNHT, dyn m): at each depth, the
+# dynamic height from the surface down to it, so at 500 m it is the 0/500 dbar
+# dynamic height. It has no quality flag.
 SEASONS = {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: "spring",
            6: "summer", 7: "summer", 8: "summer", 9: "autumn", 10: "autumn", 11: "autumn"}
 VARIABLES = {"temperature": ("T_degC", "T_qual"), "salinity": ("Salnty", "S_qual"),
              "sigma_theta": ("STheta", "SThtaq"), "oxygen": ("O2ml_L", "O_qual"),
              "nitrate": ("NO3uM", "NO3q"), "silicate": ("SiO3uM", "SiO3qu"),
-             "phosphate": ("PO4uM", "PO4q")}
+             "phosphate": ("PO4uM", "PO4q"), "dynamic_height": ("R_DYNHT", None)}
 
 
 def main():
@@ -73,7 +77,7 @@ def main():
     args = ap.parse_args()
 
     bottle = pd.read_csv(os.path.join(args.src_dir, "194903-202105_Bottle.csv"), encoding="latin-1", low_memory=False,
-                         usecols=["Cst_Cnt", "Depthm", "RecInd"] + [c for pair in VARIABLES.values() for c in pair])
+                         usecols=["Cst_Cnt", "Depthm", "RecInd"] + [c for pair in VARIABLES.values() for c in pair if c])
     cast = pd.read_csv(os.path.join(args.src_dir, "194903-202105_Cast.csv"), encoding="latin-1", low_memory=False,
                        usecols=["Cst_Cnt", "Cruise_ID", "Cruise", "Sta_ID", "Date", "Year", "Month",
                                 "Lat_Dec", "Lon_Dec", "Ship_Name", "Ship_Code"])
@@ -88,7 +92,7 @@ def main():
     # ---- quality flags ----
     out = b[["Cst_Cnt", "Depthm", "RecInd"]].rename(columns={"Depthm": "depth_m", "RecInd": "rec_ind"}).copy()
     for name, (value, flag) in VARIABLES.items():
-        ok = b[flag].isna() | b[flag].isin(KEEP_FLAGS)
+        ok = pd.Series(True, index=b.index) if flag is None else (b[flag].isna() | b[flag].isin(KEEP_FLAGS))
         out[name] = b[value].where(ok)
         print(f"  {name}: {int(b[value].notna().sum())} values, {int((b[value].notna() & ~ok).sum())} excluded by flag")
 
@@ -99,7 +103,8 @@ def main():
     out.loc[bad_s, "salinity"] = None
     out.loc[bad_t | bad_s, "sigma_theta"] = None
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded (before the domain filter)")
-    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE)]:
+    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE),
+                      ("dynamic_height", DYNHT_RANGE)]:
         bad = ~out[name].between(*rng) & out[name].notna()
         out.loc[bad, name] = None
         print(f"  range check: {int(bad.sum())} {name} values excluded")

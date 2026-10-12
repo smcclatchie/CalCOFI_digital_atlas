@@ -16,6 +16,10 @@ One value per cast (a depth, m):
                     the standard-depth interval with the largest increase of
                     nitrate with depth (dNO3/dz > 0), consecutive standard
                     depths only
+  dyn_height        the 0/500 dbar dynamic height (dyn m): CalCOFI's own
+                    dynamic height at 500 m (bottle R_DYNHT; CTD dynamic_height,
+                    both accumulated from the surface), not recomputed; casts
+                    reaching 500 m only
   chl_max_depth     CTD only: CalCOFI's chl_max_depth (the depth of the 3 m
                     running-mean chlorophyll maximum), not recomputed
   mld               CTD only: CalCOFI's headline mixed layer depth,
@@ -90,6 +94,8 @@ def derive(df, standard):
         row = {c: meta[c] for c in CAST_META}
         row["z_sigma25"] = isopycnal_depth(z, g.sigma_theta.to_numpy(float))
         row["nitricline_depth"] = steepest_gradient_depth(z, g.nitrate.to_numpy(float), standard)
+        at500 = g.loc[g.depth_m == 500, "dynamic_height"]
+        row["dyn_height"] = float(at500.iloc[0]) if len(at500) and pd.notna(at500.iloc[0]) else np.nan
         casts.append(row)
 
         t, sp = g.temperature.to_numpy(float), g.salinity.to_numpy(float)
@@ -146,7 +152,8 @@ def main():
             con.sql(f"COPY out TO '{path}' (FORMAT parquet, COMPRESSION zstd)")
             con.unregister("out")
         print(f"{source}: {len(casts)} casts; z_sigma25 {int(casts.z_sigma25.notna().sum())} "
-              f"(outcropping {int((casts.z_sigma25 == 0).sum())}), nitricline {int(casts.nitricline_depth.notna().sum())}; "
+              f"(outcropping {int((casts.z_sigma25 == 0).sum())}), nitricline {int(casts.nitricline_depth.notna().sum())}, "
+              f"0/500 dynamic height {int(casts.dyn_height.notna().sum())} (median {casts.dyn_height.median():.3f} dyn m); "
               f"spiciness {int(depths.spiciness.notna().sum())}, N2 {int(depths.n2.notna().sum())} values")
 
 
