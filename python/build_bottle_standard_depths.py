@@ -2,7 +2,7 @@
 
 """
 Temperature, salinity, density (sigma-theta), dissolved oxygen (ml/L),
-nitrate and silicate (umol/L) at the CalCOFI standard depths, one row per
+nitrate, silicate and phosphate (umol/L) at the CalCOFI standard depths, one row per
 cast and depth, from the CalCOFI bottle database, for the hydrographic atlas.
 
 Source: the CalCOFI.org database CSVs (194903-202105_Bottle.csv and _Cast.csv,
@@ -57,11 +57,13 @@ S_RANGE = (20, 35.5)                 # wide enough for real nearshore plume valu
 O2_RANGE = (0, 12)
 NO3_RANGE = (-0.5, 60)
 SIO3_RANGE = (-0.5, 200)
+PO4_RANGE = (-0.1, 6)
 SEASONS = {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: "spring",
            6: "summer", 7: "summer", 8: "summer", 9: "autumn", 10: "autumn", 11: "autumn"}
 VARIABLES = {"temperature": ("T_degC", "T_qual"), "salinity": ("Salnty", "S_qual"),
              "sigma_theta": ("STheta", "SThtaq"), "oxygen": ("O2ml_L", "O_qual"),
-             "nitrate": ("NO3uM", "NO3q"), "silicate": ("SiO3uM", "SiO3qu")}
+             "nitrate": ("NO3uM", "NO3q"), "silicate": ("SiO3uM", "SiO3qu"),
+             "phosphate": ("PO4uM", "PO4q")}
 
 
 def main():
@@ -97,7 +99,7 @@ def main():
     out.loc[bad_s, "salinity"] = None
     out.loc[bad_t | bad_s, "sigma_theta"] = None
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded (before the domain filter)")
-    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE)]:
+    for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE)]:
         bad = ~out[name].between(*rng) & out[name].notna()
         out.loc[bad, name] = None
         print(f"  range check: {int(bad.sum())} {name} values excluded")
