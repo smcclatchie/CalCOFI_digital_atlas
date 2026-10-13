@@ -40,6 +40,17 @@ keeps its own position; selected by cruise (a CalCOFI cruise, as above) and
 the CalCOFI domain, its sampling "standard" on a hydrographic CalCOFI cruise
 and "special survey" otherwise (e.g. the sardine survey cruises).
 
+Phytoplankton (for the atlas's Phytoplankton view):
+  venrick  calcofi_phytoplankton (Venrick inverted-microscope counts, cells/L,
+           1996-2022): not station samples but REGIONAL POOLS, a few per
+           cruise, each at its region's centroid, at the surface, dated by the
+           cruise month only; kept as such (one "station" per region)
+  pico     cce-lter_picoplankton-bacteria (flow cytometry, cells/mL,
+           2004-2023): Prochlorococcus, Synechococcus, picoeukaryotes and
+           heterotrophic bacteria at depths 1-270 m on CalCOFI CTD casts;
+           stations as krill (matched to the cast), depths binned into
+           PICO_LAYERS (mean of the samples in a layer)
+
 Outputs (data/CalCOFI_zooplankton/):
   plankton_volume_tows.parquet   one row per net tow, both volumes
   krill_tows.parquet, krill_values.parquet      tows; non-zero values per
@@ -69,6 +80,7 @@ TOW_COLUMNS = ["sample_key", "cruise_key", "ship_name", "site_key", "line", "sta
 MATCH_DEG = 0.05                                                     # ~5 km
 ROUNDED_LINES = {"063.0": "063.3", "067.0": "066.7", "073.0": "073.3", "077.0": "076.7",
                  "083.0": "083.3", "087.0": "086.7", "093.0": "093.3"}
+PICO_LAYERS = [("0-15 m", 0, 15), ("20-30 m", 15, 35), ("40-50 m", 35, 55), ("60-80 m", 55, 85), ("below 80 m", 85, 1000)]
 SEASONS = {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: "spring",
            6: "summer", 7: "summer", 8: "summer", 9: "autumn", 10: "autumn", 11: "autumn"}
 
@@ -223,6 +235,55 @@ def main():
     write(s[["sample_key", "cruise_key", "ship_name", "lat", "lon", "date", "year", "month", "season", "season_year",
              "sampling"]].sort_values(["date", "sample_key"]), "cufes_samples.parquet")
     write(o.sort_values(["sample_key", "taxon_key"]), "cufes_values.parquet")
+
+
+    # ---- Venrick phytoplankton: regional pools ----
+    vs = con.sql(f"""SELECT sample_key, cruise_key, latitude AS lat, longitude AS lon
+                     FROM '{url("sample")}' WHERE dataset_key = 'calcofi_phytoplankton'""").df().dropna(subset=["cruise_key"])
+    vs["date"] = vs.cruise_key.str[:7] + "-15"                  # cruise month only
+    dt = pd.to_datetime(vs.date)
+    vs["year"], vs["month"] = dt.dt.year, dt.dt.month
+    vs["season"] = vs.month.map(SEASONS)
+    vs["season_year"] = vs.year + (vs.month == 12)
+    vs["sampling"] = build.SAMPLING[0]
+    vs["ship_name"] = vs.cruise_key.map(cruise.set_index("cruise_key").ship_name)
+    vs["region"] = vs.lat.round(3).astype(str) + "," + vs.lon.round(3).astype(str)
+    vo = con.sql(f"""SELECT sample_key, taxon_key, measurement_value AS value FROM '{obs("calcofi_phytoplankton")}'
+                     WHERE measurement_value > 0""").df()
+    vo = vo[vo.sample_key.isin(vs.sample_key)]
+    vo["scientific_name"] = vo.taxon_key.map(nm.scientific_name)
+    vo["common_name"] = vo.taxon_key.map(nm.common_name)
+    print(f"venrick: {len(vs)} regional pools on {vs.cruise_key.nunique()} cruises, {vs.region.nunique()} regions, "
+          f"{vo.taxon_key.nunique()} taxa")
+    write(vs, "venrick_samples.parquet")
+    write(vo, "venrick_values.parquet")
+
+    # ---- picoplankton and bacteria: depth layers at stations ----
+    po = con.sql(f"""SELECT sample_key, taxon_key, depth_min_m AS z, measurement_value AS value, cruise_key, grid_key,
+                            latitude, longitude, datetime FROM '{obs("cce-lter_picoplankton-bacteria")}'
+                     WHERE measurement_value IS NOT NULL""").df()
+    # one "tow" per cast: the samples of one position and day
+    po["day"] = pd.to_datetime(po.datetime).dt.strftime("%Y-%m-%d")
+    po["cast_key"] = po.day + "|" + po.latitude.round(3).astype(str) + "," + po.longitude.round(3).astype(str)
+    casts = (po.drop_duplicates("cast_key")[["cast_key", "cruise_key", "grid_key", "latitude", "longitude", "datetime"]]
+               .rename(columns={"cast_key": "sample_key"}))
+    casts["site_key"] = None
+    casts["tow_type"] = None
+    casts = select(match_ichthyo(casts, nets, "pico"), release, "pico")
+    po["layer"] = pd.cut(po.z, [lo for _, lo, _ in PICO_LAYERS] + [PICO_LAYERS[-1][2]], labels=[n for n, _, _ in PICO_LAYERS],
+                         right=False)
+    pv = (po.dropna(subset=["layer"]).groupby(["cast_key", "taxon_key", "layer"], observed=True).value.mean().reset_index()
+            .rename(columns={"cast_key": "sample_key", "layer": "stage"}))
+    pv = pv[pv.sample_key.isin(casts.sample_key) & (pv.value > 0)]
+    pnames = {"worms:345515": ("Prochlorococcus", "Prochlorococcus"), "worms:160572": ("Synechococcus", "Synechococcus"),
+              "cce-lter_picoplankton-bacteria:picoeukaryotes": ("Picoeukaryotes", "photosynthetic picoeukaryotes"),
+              "cce-lter_picoplankton-bacteria:het_bacteria": ("Heterotrophic bacteria", "heterotrophic bacteria")}
+    pv["scientific_name"] = pv.taxon_key.map(lambda k: pnames.get(k, (k, None))[0])
+    pv["common_name"] = pv.taxon_key.map(lambda k: pnames.get(k, (k, None))[1])
+    pv["stage"] = pv.stage.astype(str)
+    print(f"  pico: {pv.groupby('stage').size().to_dict()}")
+    write(casts[TOW_COLUMNS].sort_values(["date", "sample_key"]), "pico_casts.parquet")
+    write(pv, "pico_values.parquet")
 
 
 if __name__ == "__main__":
