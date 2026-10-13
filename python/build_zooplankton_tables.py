@@ -33,12 +33,21 @@ same date within MATCH_DEG, or failing a net the CTD cast (which also gives
 the ZooScan tows without one their cruise), so all three views agree; unmatched tows keep their own keys, the rounded lines
 mapped to the standard ones (ROUNDED_LINES).
 
+CUFES (swfsc_cufes, Continuous Underway Fish Egg Sampler, 1996-2022): pumped
+samples along the ship's track, eggs per m3 of anchovy, sardine, jack
+mackerel, hake, market squid and other fish. Not at stations, so each sample
+keeps its own position; selected by cruise (a CalCOFI cruise, as above) and
+the CalCOFI domain, its sampling "standard" on a hydrographic CalCOFI cruise
+and "special survey" otherwise (e.g. the sardine survey cruises).
+
 Outputs (data/CalCOFI_zooplankton/):
   plankton_volume_tows.parquet   one row per net tow, both volumes
   krill_tows.parquet, krill_values.parquet      tows; non-zero values per
                                                 tow x taxon x stage
   zooscan_tows.parquet, zooscan_values.parquet  tows; values per tow x
                                                 class x measurement
+  cufes_samples.parquet, cufes_values.parquet   samples; non-zero eggs per m3
+                                                per sample x taxon
 
 Usage:  python build_zooplankton_tables.py [--release latest]
 """
@@ -185,6 +194,35 @@ def main():
         print(f"  {label}: {vals.taxon_key.nunique()} taxa; {vals.groupby(['measurement']).size().to_dict()}")
         write(tows[TOW_COLUMNS].sort_values(["date", "sample_key"]), f"{label}_tows.parquet")
         write(vals.sort_values(["sample_key", "taxon_key"]), f"{label}_values.parquet")
+
+
+    # ---- CUFES: underway samples, each at its own position ----
+    s = con.sql(f"""SELECT sample_key, cruise_key, grid_key, latitude, longitude, datetime
+                    FROM '{url("sample")}' WHERE dataset_key = 'swfsc_cufes'""").df()
+    s = s.rename(columns={"latitude": "lat", "longitude": "lon"})
+    s["grid_key"] = "on track"                      # select by cruise and domain only
+    cruise = build.read_cruise_table(release)
+    keep, per_cruise = build.select_calcofi_nets(s, cruise)
+    s = s[keep].copy()
+    s["sampling"] = np.where(s.cruise_key.map(per_cruise.hydro_cruise).fillna(False).astype(bool),
+                             build.SAMPLING[0], build.SAMPLING[1])
+    dt = pd.to_datetime(s.datetime)
+    s["date"] = dt.dt.strftime("%Y-%m-%d")
+    s["year"], s["month"] = dt.dt.year, dt.dt.month
+    s["season"] = s.month.map(SEASONS)
+    s["season_year"] = s.year + (s.month == 12)
+    s["ship_name"] = s.cruise_key.map(cruise.set_index("cruise_key").ship_name)
+    print(f"cufes: {len(s)} samples selected on {s.cruise_key.nunique()} cruises; {s.sampling.value_counts().to_dict()}")
+    o = con.sql(f"""SELECT sample_key, taxon_key, measurement_value AS value FROM '{obs("swfsc_cufes")}'
+                    WHERE measurement_type = 'egg_concentration' AND measurement_value > 0""").df()
+    o = o[o.sample_key.isin(s.sample_key)]
+    nm = con.sql(f"SELECT taxon_key, scientific_name, common_name FROM '{url('taxon')}'").df().set_index("taxon_key")
+    o["scientific_name"] = o.taxon_key.map(nm.scientific_name)
+    o["common_name"] = o.taxon_key.map(nm.common_name)
+    print(f"  cufes: {o.groupby('scientific_name').size().to_dict()} non-zero samples")
+    write(s[["sample_key", "cruise_key", "ship_name", "lat", "lon", "date", "year", "month", "season", "season_year",
+             "sampling"]].sort_values(["date", "sample_key"]), "cufes_samples.parquet")
+    write(o.sort_values(["sample_key", "taxon_key"]), "cufes_values.parquet")
 
 
 if __name__ == "__main__":

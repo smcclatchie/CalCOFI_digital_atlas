@@ -2,8 +2,8 @@
 
 """
 Temperature, salinity, density (sigma-theta), dissolved oxygen (ml/L),
-nitrate, silicate and phosphate (umol/L) and chlorophyll a (ug/L, extracted,
-1973 onward, 0-200 m) at the CalCOFI standard depths, one row per
+nitrate, silicate and phosphate (umol/L) and chlorophyll a and phaeopigment
+(ug/L, extracted, 1973 onward, 0-200 m) at the CalCOFI standard depths, one row per
 cast and depth, from the CalCOFI bottle database, for the hydrographic atlas.
 
 Source: the CalCOFI.org database CSVs (194903-202105_Bottle.csv and _Cast.csv,
@@ -16,7 +16,7 @@ Standard depths: 0, 10, 20, 30, 50, 75, 100, 125, 150, 200, 250, 300, 400,
 standard depth), RecInd 3 (a bottle observed exactly there) or RecInd 5.
 RecInd 6 only ever appears as a second copy beside a 3 and is dropped.
 
-Quality flags (T_qual, S_qual, SThtaq; O_qual, NO3q, SiO3qu, Chlqua follow the same
+Quality flags (T_qual, S_qual, SThtaq; O_qual, NO3q, SiO3qu, Chlqua, Phaqua follow the same
 pattern), as read from the data's own pattern
 (flag x RecInd): 9 = missing (never has a value); 8 = questionable (only on
 observed bottles) -> excluded; 6 = interpolated/estimated (almost all on the
@@ -69,7 +69,7 @@ SEASONS = {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: 
 VARIABLES = {"temperature": ("T_degC", "T_qual"), "salinity": ("Salnty", "S_qual"),
              "sigma_theta": ("STheta", "SThtaq"), "oxygen": ("O2ml_L", "O_qual"),
              "nitrate": ("NO3uM", "NO3q"), "silicate": ("SiO3uM", "SiO3qu"),
-             "phosphate": ("PO4uM", "PO4q"), "chlorophyll": ("ChlorA", "Chlqua"),
+             "phosphate": ("PO4uM", "PO4q"), "chlorophyll": ("ChlorA", "Chlqua"), "phaeopigment": ("Phaeop", "Phaqua"),
              "dynamic_height": ("R_DYNHT", None)}
 
 
@@ -107,7 +107,7 @@ def main():
     out.loc[bad_t | bad_s, "sigma_theta"] = None
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded (before the domain filter)")
     for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE),
-                      ("chlorophyll", CHL_RANGE), ("dynamic_height", DYNHT_RANGE)]:
+                      ("chlorophyll", CHL_RANGE), ("phaeopigment", CHL_RANGE), ("dynamic_height", DYNHT_RANGE)]:
         bad = ~out[name].between(*rng) & out[name].notna()
         out.loc[bad, name] = None
         print(f"  range check: {int(bad.sum())} {name} values excluded")

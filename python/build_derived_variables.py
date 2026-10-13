@@ -27,6 +27,14 @@ One value per cast (a depth, m):
                     10 m value), not recomputed
   chl_integrated    CTD only: CalCOFI's chlorophyll a integrated over the top
                     200 m (or to the cast bottom), mg/m2, not recomputed
+  pp_integrated     bottle only: 14C primary production integrated over the
+                    sampled depths (mg C m-2 per half light-day), from the
+                    mean of the replicate assimilations (MeanAs) at the
+                    observed light-level bottles (RecInd 3, flag 8 out):
+                    trapezoids between bottles, the shallowest value held up
+                    to the surface, nothing below the deepest bottle (the
+                    incubations reach ~1% light, so little production is
+                    missed); casts with at least 3 such bottles
 
 At each standard depth / interval:
   spiciness         TEOS-10 spiciness referenced to 0 dbar (gsw.spiciness0,
@@ -52,6 +60,7 @@ import pandas as pd
 
 import build_gridded_abundance_by_cruise_and_taxon as build
 from build_bottle_standard_depths import OUT as BOTTLE_TABLE
+from build_bottle_standard_depths import SRC_DIR as BOTTLE_DIR
 from build_ctd_standard_depths import DB, OUT as CTD_TABLE
 
 OUT_DIR = os.path.join(build.REPO_DIR, "data", "CalCOFI_derived")
@@ -118,6 +127,24 @@ def derive(df, standard):
     return pd.DataFrame(casts), pd.DataFrame(depths)
 
 
+PP_MIN_BOTTLES = 3
+
+
+def bottle_primary_production():
+    """Integrated 14C primary production per bottle cast (see the module docstring), keyed by cast."""
+    b = pd.read_csv(os.path.join(BOTTLE_DIR, "194903-202105_Bottle.csv"), encoding="latin-1", low_memory=False,
+                    usecols=["Cst_Cnt", "Depthm", "RecInd", "MeanAs", "MeanAq"])
+    b = b[(b.RecInd == 3) & b.MeanAs.notna() & (b.MeanAq != 8)].sort_values(["Cst_Cnt", "Depthm"])
+    out = {}
+    for cast, g in b.groupby("Cst_Cnt"):
+        g = g.drop_duplicates("Depthm")
+        if len(g) < PP_MIN_BOTTLES:
+            continue
+        z, v = g.Depthm.to_numpy(float), g.MeanAs.to_numpy(float).clip(min=0)
+        out[cast] = float(z[0] * v[0] + np.trapezoid(v, z))
+    return pd.Series(out, name="pp_integrated")
+
+
 def calcofi_ctd_derived(release):
     """CalCOFI's own per-cast CTD values (sample_measurement), keyed by our cast id."""
     con = duckdb.connect()
@@ -142,6 +169,11 @@ def main():
     for source, table in [("bottle", BOTTLE_TABLE), ("ctd", CTD_TABLE)]:
         df = con.sql(f"SELECT * FROM '{table}' WHERE site_key IS NOT NULL").df()
         casts, depths = derive(df, standard)
+        if source == "bottle":
+            pp = bottle_primary_production()
+            casts = casts.merge(pp, left_on="cast", right_index=True, how="left")
+            print(f"14C integrated primary production: {int(casts.pp_integrated.notna().sum())} casts, "
+                  f"median {casts.pp_integrated.median():.0f} mg C m-2 per half light-day")
         if source == "ctd":
             release = build.resolve_release(args.release)
             cd = calcofi_ctd_derived(release)
