@@ -27,6 +27,8 @@ One value per cast (a depth, m):
                     10 m value), not recomputed
   chl_integrated    CTD only: CalCOFI's chlorophyll a integrated over the top
                     200 m (or to the cast bottom), mg/m2, not recomputed
+  secchi            bottle only: the Secchi disk depth (m) recorded with the
+                    cast (CalCOFI.org Cast.csv, 1969-2021, daylight stations)
   pp_integrated     bottle only: 14C primary production integrated over the
                     sampled depths (mg C m-2 per half light-day), from the
                     mean of the replicate assimilations (MeanAs) at the
@@ -170,6 +172,10 @@ def main():
         df = con.sql(f"SELECT * FROM '{table}' WHERE site_key IS NOT NULL").df()
         casts, depths = derive(df, standard)
         if source == "bottle":
+            sec = pd.read_csv(os.path.join(BOTTLE_DIR, "194903-202105_Cast.csv"), encoding="latin-1", low_memory=False,
+                              usecols=["Cst_Cnt", "Secchi"]).dropna().rename(columns={"Cst_Cnt": "cast", "Secchi": "secchi"})
+            casts = casts.merge(sec, on="cast", how="left")
+            print(f"Secchi depth: {int(casts.secchi.notna().sum())} casts, median {casts.secchi.median():.0f} m")
             pp = bottle_primary_production()
             casts = casts.merge(pp, left_on="cast", right_index=True, how="left")
             print(f"14C integrated primary production: {int(casts.pp_integrated.notna().sum())} casts, "
