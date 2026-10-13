@@ -25,6 +25,8 @@ One value per cast (a depth, m):
   mld               CTD only: CalCOFI's headline mixed layer depth,
                     mld_sigma_theta_002 (sigma-theta 0.02 kg/m3 above its
                     10 m value), not recomputed
+  chl_integrated    CTD only: CalCOFI's chlorophyll a integrated over the top
+                    200 m (or to the cast bottom), mg/m2, not recomputed
 
 At each standard depth / interval:
   spiciness         TEOS-10 spiciness referenced to 0 dbar (gsw.spiciness0,
@@ -54,7 +56,7 @@ from build_ctd_standard_depths import DB, OUT as CTD_TABLE
 
 OUT_DIR = os.path.join(build.REPO_DIR, "data", "CalCOFI_derived")
 SIGMA_SURFACE = 25.0
-CALCOFI_CTD_DERIVED = {"chl_max_depth": "chl_max_depth", "mld": "mld_sigma_theta_002"}
+CALCOFI_CTD_DERIVED = {"chl_max_depth": "chl_max_depth", "mld": "mld_sigma_theta_002", "chl_integrated": "chl_integrated"}
 CAST_META = ["cast", "date", "year", "month", "season", "season_year", "site_key", "line", "station", "lat", "lon"]
 
 
@@ -145,7 +147,8 @@ def main():
             cd = calcofi_ctd_derived(release)
             casts = casts.merge(cd, on="cast", how="left")
             print(f"CalCOFI CTD-derived values (release {release}): "
-                  f"chl_max_depth {int(casts.chl_max_depth.notna().sum())}, mld {int(casts.mld.notna().sum())} casts")
+                  f"chl_max_depth {int(casts.chl_max_depth.notna().sum())}, mld {int(casts.mld.notna().sum())}, "
+                  f"chl_integrated {int(casts.chl_integrated.notna().sum())} casts")
         for name, out in [("casts", casts), ("depths", depths)]:
             path = os.path.join(OUT_DIR, f"calcofi_{source}_derived_{name}.parquet")
             con.register("out", out)
