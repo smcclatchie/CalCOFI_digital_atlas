@@ -37,6 +37,13 @@ Variables:
   chlorophyll  fluorometer chlorophyll a (ug/L) calibrated to bottle chlorophyll:
                est_chlorophyll_a_sta_corr (to the station's own bottles), else
                est_chlorophyll_a_cruise_corr; chlorophyll_source records which
+  nitrite,     bottle values on the CTD casts, as nitrate (btl_nitrite,
+  ammonium     btl_ammonium, 2008 onward)
+  ph           the pH sensor (2009 onward), at the standard depths as temperature
+  oxygen_saturation  computed (%): oxygen / its solubility at the cast's
+               temperature and salinity (gsw.O2sol_SP_pt, Garcia & Gordon 1992),
+               both in umol/kg, the oxygen converted from ml/L with the
+               water's density
   dynamic_height  CalCOFI's dynamic height (dyn m) from the surface down to each
                depth, so at 500 m the 0/500 dbar dynamic height (downcasts)
 Quality flags 8 (questionable) and 9 (missing) are excluded; the same wide
@@ -53,12 +60,13 @@ import argparse
 import os
 
 import duckdb
+import gsw
 import numpy as np
 import pandas as pd
 
 import build_gridded_abundance_by_cruise_and_taxon as build
-from build_bottle_standard_depths import (CHL_RANGE, DYNHT_RANGE, NO3_RANGE, O2_RANGE, PO4_RANGE, S_RANGE, SEASONS,
-                                         SIO3_RANGE, STANDARD_DEPTHS, T_RANGE)
+from build_bottle_standard_depths import (CHL_RANGE, DYNHT_RANGE, NH4_RANGE, NO2_RANGE, NO3_RANGE, O2_RANGE, O2SAT_RANGE,
+                                         PH_RANGE, PO4_RANGE, S_RANGE, SEASONS, SIO3_RANGE, STANDARD_DEPTHS, T_RANGE)
 from eos80 import pressure_from_depth, sigma_theta
 
 OUT = os.path.join(build.REPO_DIR, "data", "CalCOFI_CTD", "calcofi_ctd_standard_depths.parquet")
@@ -68,8 +76,8 @@ OXYGEN_PREFERENCE = ["oxygen_ml_l_ave_sta_corr", "oxygen_ml_l_ave_cruise_corr", 
                      "oxygen_ml_l_1_cruise_corr", "oxygen_ml_l_1"]
 CHLOROPHYLL_PREFERENCE = ["est_chlorophyll_a_sta_corr", "est_chlorophyll_a_cruise_corr"]
 BOTTLE_TYPES = {"nitrate": "btl_nitrate", "silicate": "btl_silicate", "phosphate": "btl_phosphate",
-                "phaeopigment": "btl_phaeopigment"}
-TYPES = (["temperature_ave", "dynamic_height"] + SALINITY_PREFERENCE + OXYGEN_PREFERENCE + CHLOROPHYLL_PREFERENCE
+                "phaeopigment": "btl_phaeopigment", "nitrite": "btl_nitrite", "ammonium": "btl_ammonium"}
+TYPES = (["temperature_ave", "dynamic_height", "ph"] + SALINITY_PREFERENCE + OXYGEN_PREFERENCE + CHLOROPHYLL_PREFERENCE
          + list(BOTTLE_TYPES.values()))
 BAD_FLAGS = ("8", "9")
 SURFACE_MAX_M = 3.0
@@ -142,6 +150,7 @@ def main():
         empty = np.full(len(TARGETS), np.nan)
         temp = profile("temperature_ave")
         dynht = profile("dynamic_height")
+        ph = profile("ph")
         sal, sal_source = preferred(SALINITY_PREFERENCE)
         oxy, oxy_source = preferred(OXYGEN_PREFERENCE)
         chl, chl_source = preferred(CHLOROPHYLL_PREFERENCE)
@@ -150,6 +159,7 @@ def main():
         rows.append(pd.DataFrame({"sample_key": key, "depth_m": STANDARD_DEPTHS,
                                   "temperature": empty if temp is None else temp,
                                   "dynamic_height": empty if dynht is None else dynht,
+                                  "ph": empty if ph is None else ph,
                                   "salinity": sal, "salinity_source": sal_source,
                                   "oxygen": oxy, "oxygen_source": oxy_source,
                                   "chlorophyll": chl, "chlorophyll_source": chl_source,
@@ -169,11 +179,20 @@ def main():
     out.loc[bad_s, "salinity"] = np.nan
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded")
     for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE),
-                      ("chlorophyll", CHL_RANGE), ("phaeopigment", CHL_RANGE), ("dynamic_height", DYNHT_RANGE)]:
+                      ("chlorophyll", CHL_RANGE), ("phaeopigment", CHL_RANGE),
+                      ("nitrite", NO2_RANGE), ("ammonium", NH4_RANGE), ("ph", PH_RANGE), ("dynamic_height", DYNHT_RANGE)]:
         bad = ~out[name].between(*rng) & out[name].notna()
         out.loc[bad, name] = np.nan
         print(f"  range check: {int(bad.sum())} {name} values excluded")
     out["sigma_theta"] = sigma_theta(out.temperature, out.salinity, pressure_from_depth(out.depth_m, out.lat))
+    # oxygen saturation (see the docstring): O2 ml/L -> umol/kg = ml/L * 44.661 / (density / 1000)
+    p_db = gsw.p_from_z(-out.depth_m.to_numpy(float), out.lat.to_numpy(float))
+    sa = gsw.SA_from_SP(out.salinity.to_numpy(float), p_db, out.lon.to_numpy(float), out.lat.to_numpy(float))
+    pt = gsw.pt0_from_t(sa, out.temperature.to_numpy(float), p_db)
+    rho = gsw.rho_t_exact(sa, out.temperature.to_numpy(float), p_db)
+    o2_umol_kg = out.oxygen.to_numpy(float) * 44.661 / (rho / 1000.0)
+    out["oxygen_saturation"] = 100.0 * o2_umol_kg / gsw.O2sol_SP_pt(out.salinity.to_numpy(float), pt)
+    out.loc[~out.oxygen_saturation.between(*O2SAT_RANGE), "oxygen_saturation"] = np.nan
     out = out.dropna(subset=["temperature", "salinity", "sigma_theta", "oxygen", "nitrate", "silicate", "phosphate",
                              "chlorophyll", "phaeopigment"], how="all")
 
@@ -194,7 +213,7 @@ def main():
     out["cast"] = out.sample_key.str.split(":").str[-1]
     cols = ["cast", "cruise_key", "date", "year", "month", "season", "season_year", "site_key", "line", "station",
             "lat", "lon", "depth_m", "temperature", "salinity", "sigma_theta", "oxygen", "nitrate", "silicate", "phosphate",
-            "chlorophyll", "phaeopigment", "dynamic_height",
+            "chlorophyll", "phaeopigment", "nitrite", "ammonium", "ph", "oxygen_saturation", "dynamic_height",
             "salinity_source", "oxygen_source", "chlorophyll_source"]
     out = out[cols].sort_values(["date", "cast", "depth_m"])
 

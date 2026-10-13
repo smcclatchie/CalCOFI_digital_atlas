@@ -3,7 +3,8 @@
 """
 Temperature, salinity, density (sigma-theta), dissolved oxygen (ml/L),
 nitrate, silicate and phosphate (umol/L) and chlorophyll a and phaeopigment
-(ug/L, extracted, 1973 onward, 0-200 m) at the CalCOFI standard depths, one row per
+(ug/L, extracted, 1973 onward, 0-200 m), nitrite and ammonium (umol/L) and
+oxygen saturation (%, CalCOFI's O2Sat) at the CalCOFI standard depths, one row per
 cast and depth, from the CalCOFI bottle database, for the hydrographic atlas.
 
 Source: the CalCOFI.org database CSVs (194903-202105_Bottle.csv and _Cast.csv,
@@ -16,7 +17,8 @@ Standard depths: 0, 10, 20, 30, 50, 75, 100, 125, 150, 200, 250, 300, 400,
 standard depth), RecInd 3 (a bottle observed exactly there) or RecInd 5.
 RecInd 6 only ever appears as a second copy beside a 3 and is dropped.
 
-Quality flags (T_qual, S_qual, SThtaq; O_qual, NO3q, SiO3qu, Chlqua, Phaqua follow the same
+Ammonium's flag 4 marks values below detection (all 0.0): kept, as zero.
+Quality flags (T_qual, S_qual, SThtaq; O_qual, NO3q, SiO3qu, Chlqua, Phaqua, NO2q, O2Satq follow the same
 pattern), as read from the data's own pattern
 (flag x RecInd): 9 = missing (never has a value); 8 = questionable (only on
 observed bottles) -> excluded; 6 = interpolated/estimated (almost all on the
@@ -60,6 +62,11 @@ NO3_RANGE = (-0.5, 60)
 SIO3_RANGE = (-0.5, 200)
 PO4_RANGE = (-0.1, 6)
 CHL_RANGE = (-0.05, 80)              # ug/L; nearshore blooms reach ~55
+NO2_RANGE = (-0.1, 10)
+NH4_RANGE = (-0.1, 40)
+O2SAT_RANGE = (0, 250)                # %
+PH_RANGE = (7.0, 8.7)
+EXTRA_KEEP_FLAGS = {"NH3q": {4}}      # below detection, recorded as 0
 DYNHT_RANGE = (0, 3)                 # dynamic metres
 # CalCOFI's reported dynamic height (R_DYNHT, dyn m): at each depth, the
 # dynamic height from the surface down to it, so at 500 m it is the 0/500 dbar
@@ -70,6 +77,7 @@ VARIABLES = {"temperature": ("T_degC", "T_qual"), "salinity": ("Salnty", "S_qual
              "sigma_theta": ("STheta", "SThtaq"), "oxygen": ("O2ml_L", "O_qual"),
              "nitrate": ("NO3uM", "NO3q"), "silicate": ("SiO3uM", "SiO3qu"),
              "phosphate": ("PO4uM", "PO4q"), "chlorophyll": ("ChlorA", "Chlqua"), "phaeopigment": ("Phaeop", "Phaqua"),
+             "nitrite": ("NO2uM", "NO2q"), "ammonium": ("NH3uM", "NH3q"), "oxygen_saturation": ("O2Sat", "O2Satq"),
              "dynamic_height": ("R_DYNHT", None)}
 
 
@@ -95,7 +103,7 @@ def main():
     # ---- quality flags ----
     out = b[["Cst_Cnt", "Depthm", "RecInd"]].rename(columns={"Depthm": "depth_m", "RecInd": "rec_ind"}).copy()
     for name, (value, flag) in VARIABLES.items():
-        ok = pd.Series(True, index=b.index) if flag is None else (b[flag].isna() | b[flag].isin(KEEP_FLAGS))
+        ok = pd.Series(True, index=b.index) if flag is None else (b[flag].isna() | b[flag].isin(KEEP_FLAGS | EXTRA_KEEP_FLAGS.get(flag, set())))
         out[name] = b[value].where(ok)
         print(f"  {name}: {int(b[value].notna().sum())} values, {int((b[value].notna() & ~ok).sum())} excluded by flag")
 
@@ -107,7 +115,8 @@ def main():
     out.loc[bad_t | bad_s, "sigma_theta"] = None
     print(f"  range check: {int(bad_t.sum())} temperature, {int(bad_s.sum())} salinity values excluded (before the domain filter)")
     for name, rng in [("oxygen", O2_RANGE), ("nitrate", NO3_RANGE), ("silicate", SIO3_RANGE), ("phosphate", PO4_RANGE),
-                      ("chlorophyll", CHL_RANGE), ("phaeopigment", CHL_RANGE), ("dynamic_height", DYNHT_RANGE)]:
+                      ("chlorophyll", CHL_RANGE), ("phaeopigment", CHL_RANGE),
+                      ("nitrite", NO2_RANGE), ("ammonium", NH4_RANGE), ("oxygen_saturation", O2SAT_RANGE), ("dynamic_height", DYNHT_RANGE)]:
         bad = ~out[name].between(*rng) & out[name].notna()
         out.loc[bad, name] = None
         print(f"  range check: {int(bad.sum())} {name} values excluded")
