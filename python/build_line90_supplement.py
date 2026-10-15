@@ -26,6 +26,12 @@ Vinciguerria1, Gonostomatidae1) are every larva of that group without a
 column of its own, not the genus- or family-level record, so they would be
 wrong as either. Others (e.g. Sebastes1 = the Sebastes spp. record) pass.
 
+Exception (user, 2026-10-16): Vinciguerria1 stands in for Vinciguerria
+lucetia (SUBSTITUTE), so the atlas's warm-water group, which needs
+V. lucetia, also reaches 2025 -- almost all Vinciguerria larvae are
+V. lucetia, and Vinciguerria1 matches the summed Vinciguerria records on
+97% of the overlap. Superseded once CalCOFI.io holds these months.
+
 Outputs (data/CalCOFI_ichthyoplankton/line90_supplement/):
   line90_supplement_catch.parquet  as calcofi_ichthyo_stations_catch.parquet
                                    (no geometry): non-zero catches only
@@ -49,6 +55,7 @@ SRC = os.path.join(ICHTHYO_DIR, "larval_line 90 through 2025_from_Andrew.csv")
 DB_DIR = os.path.join(ICHTHYO_DIR, "ichthyoplankton_from_calCOFI.io")
 OUT_DIR = os.path.join(ICHTHYO_DIR, "line90_supplement")
 SPELLING = {"Lampanyctus ritterii": "Lampanyctus ritteri"}
+SUBSTITUTE = {"Vinciguerria1": "Vinciguerria lucetia"}   # column -> taxon it stands in for (see above)
 SHIPS = {"SH": ("BELL M. SHIMADA", "3322"), "RL": ("REUBEN LASKER", "33UD")}
 MIN_AGREE = 0.85
 ID_COLUMNS = ["S_C", "S_SC", "S_L", "S_S", "year", "season"]
@@ -84,6 +91,10 @@ def main():
     overlap.index.names = ["period", "station"]
     kept, report = {}, []
     for col in [c for c in src.columns if c not in ID_COLUMNS + ["period"]]:
+        if col in SUBSTITUTE:
+            kept[col] = SUBSTITUTE[col]
+            report.append((col, by_name.loc[SUBSTITUTE[col], "taxon_key"], np.nan, np.nan, f"kept as {SUBSTITUTE[col]}"))
+            continue
         name = SPELLING.get(col.replace(".", " "), col.replace(".", " ")).rstrip("1")
         if name not in by_name.index:
             report.append((col, "-", np.nan, np.nan, "no CalCOFI.io taxon of that name"))
@@ -99,7 +110,8 @@ def main():
         if ok:
             kept[col] = name
     report = pd.DataFrame(report, columns=["column", "taxon_key", "agree_taxon", "agree_all_under_name", "decision"])
-    print(report[report.decision != "kept"].to_string(index=False))
+    print(report[~report.decision.str.startswith("kept")].to_string(index=False))
+    print(report[report.decision.str.startswith("kept as")].to_string(index=False))
     print(f"{len(kept)} of {len(report)} columns kept")
 
     # ---- the new survey months ----
