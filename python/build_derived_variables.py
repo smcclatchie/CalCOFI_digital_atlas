@@ -7,11 +7,15 @@ build_bottle_standard_depths.py and build_ctd_standard_depths.py, plus
 CalCOFI's own CTD-derived values.
 
 One value per cast (a depth, m):
-  z_sigma25         depth of the sigma-theta = 25.0 surface: its first
-                    crossing down the standard-depth profile, interpolated
-                    linearly; 0 where the surface water is already denser
-                    (the surface outcrops); missing if the profile never
-                    reaches 25.0
+  z_sigma25         depth of the sigma-theta = 25.8 surface (2026-10-17, user:
+                    it was 25.0; the column keeps its name so the atlas's
+                    links still work): its first crossing down the
+                    standard-depth profile, interpolated linearly; 0 where
+                    the surface water is already denser (the surface
+                    outcrops); missing if the profile never reaches 25.8
+  z_sigma264        depth of the sigma-theta = 26.4 surface, the same way
+                    (added 2026-10-17); with 25.8 the isopycnals of the
+                    atlas's Water masses view
   nitricline_depth  depth of the steepest nitrate gradient: the midpoint of
                     the standard-depth interval with the largest increase of
                     nitrate with depth (dNO3/dz > 0), consecutive standard
@@ -66,7 +70,8 @@ from build_bottle_standard_depths import SRC_DIR as BOTTLE_DIR
 from build_ctd_standard_depths import DB, OUT as CTD_TABLE
 
 OUT_DIR = os.path.join(build.REPO_DIR, "data", "CalCOFI_derived")
-SIGMA_SURFACE = 25.0
+SIGMA_SURFACE = 25.8          # z_sigma25 (was 25.0 until 2026-10-17)
+SIGMA_DEEP = 26.4             # z_sigma264
 CALCOFI_CTD_DERIVED = {"chl_max_depth": "chl_max_depth", "mld": "mld_sigma_theta_002", "chl_integrated": "chl_integrated"}
 CAST_META = ["cast", "date", "year", "month", "season", "season_year", "site_key", "line", "station", "lat", "lon"]
 
@@ -106,6 +111,7 @@ def derive(df, standard):
         meta = g.iloc[0]
         row = {c: meta[c] for c in CAST_META}
         row["z_sigma25"] = isopycnal_depth(z, g.sigma_theta.to_numpy(float))
+        row["z_sigma264"] = isopycnal_depth(z, g.sigma_theta.to_numpy(float), SIGMA_DEEP)
         row["nitricline_depth"] = steepest_gradient_depth(z, g.nitrate.to_numpy(float), standard)
         at500 = g.loc[g.depth_m == 500, "dynamic_height"]
         row["dyn_height"] = float(at500.iloc[0]) if len(at500) and pd.notna(at500.iloc[0]) else np.nan
@@ -192,8 +198,9 @@ def main():
             con.register("out", out)
             con.sql(f"COPY out TO '{path}' (FORMAT parquet, COMPRESSION zstd)")
             con.unregister("out")
-        print(f"{source}: {len(casts)} casts; z_sigma25 {int(casts.z_sigma25.notna().sum())} "
-              f"(outcropping {int((casts.z_sigma25 == 0).sum())}), nitricline {int(casts.nitricline_depth.notna().sum())}, "
+        print(f"{source}: {len(casts)} casts; z_sigma25 (25.8) {int(casts.z_sigma25.notna().sum())} "
+              f"(outcropping {int((casts.z_sigma25 == 0).sum())}, median {casts.z_sigma25.median():.0f} m), "
+              f"z_sigma264 {int(casts.z_sigma264.notna().sum())} (median {casts.z_sigma264.median():.0f} m), nitricline {int(casts.nitricline_depth.notna().sum())}, "
               f"0/500 dynamic height {int(casts.dyn_height.notna().sum())} (median {casts.dyn_height.median():.3f} dyn m); "
               f"spiciness {int(depths.spiciness.notna().sum())}, N2 {int(depths.n2.notna().sum())} values")
 
